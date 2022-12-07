@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.5.0
+	github.com/klauspost/compress v1.15.12
 	github.com/stretchr/testify v1.8.0
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.2.0
 	go.elastic.co/apm/module/apmzap/v2 v2.2.0
