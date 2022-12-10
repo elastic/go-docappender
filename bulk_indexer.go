@@ -54,7 +54,6 @@ type bulkIndexer struct {
 	jsonw        fastjson.Writer
 	gzipw        *gzip.Writer
 	copybuf      [32 * 1024]byte
-	writer       io.Writer
 	buf          bytes.Buffer
 	resp         esutil.BulkIndexerResponse
 }
@@ -64,7 +63,6 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkInd
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(nil, compressionLevel)
 	}
-	b.writer = &b.buf
 	b.Reset()
 	return b
 }
@@ -104,10 +102,10 @@ type bulkIndexerItem struct {
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	b.writeMeta(item.Index, item.Action, item.DocumentID)
-	if _, err := io.CopyBuffer(b.writer, item.Body, b.copybuf[:]); err != nil {
+	if _, err := io.CopyBuffer(&b.buf, item.Body, b.copybuf[:]); err != nil {
 		return err
 	}
-	if _, err := b.writer.Write([]byte("\n")); err != nil {
+	if _, err := b.buf.WriteString("\n"); err != nil {
 		return err
 	}
 	b.itemsAdded++
@@ -130,7 +128,7 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 		b.jsonw.String(index)
 	}
 	b.jsonw.RawString("}}\n")
-	b.writer.Write(b.jsonw.Bytes())
+	b.buf.Write(b.jsonw.Bytes())
 	b.jsonw.Reset()
 }
 
