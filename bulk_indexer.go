@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
@@ -131,8 +130,6 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 	b.jsonw.Reset()
 }
 
-var bufPool sync.Pool = sync.Pool{New: func() interface{} { return &bytes.Buffer{} }}
-
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
 func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, error) {
 	if b.itemsAdded == 0 {
@@ -142,9 +139,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, er
 	bbuf := &b.buf
 
 	if b.gzipw != nil {
-		buf := bufPool.Get().(*bytes.Buffer)
-		buf.Reset()
-		defer bufPool.Put(buf)
+		arr := make([]byte, 0, b.buf.Len())
+		buf := bytes.NewBuffer(arr)
 
 		b.gzipw.Reset(buf)
 		b.gzipw.Write(b.buf.Bytes())
