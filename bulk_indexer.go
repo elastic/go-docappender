@@ -53,7 +53,6 @@ type bulkIndexer struct {
 	bytesFlushed int
 	jsonw        fastjson.Writer
 	gzipw        *gzip.Writer
-	copybuf      [32 * 1024]byte
 	buf          bytes.Buffer
 	resp         esutil.BulkIndexerResponse
 }
@@ -102,7 +101,7 @@ type bulkIndexerItem struct {
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	b.writeMeta(item.Index, item.Action, item.DocumentID)
-	if _, err := io.CopyBuffer(&b.buf, item.Body, b.copybuf[:]); err != nil {
+	if _, err := b.buf.ReadFrom(item.Body); err != nil {
 		return err
 	}
 	if _, err := b.buf.WriteString("\n"); err != nil {
