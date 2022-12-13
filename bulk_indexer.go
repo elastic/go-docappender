@@ -100,7 +100,7 @@ type bulkIndexerItem struct {
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	b.writeMeta(item.Index, item.Action, item.DocumentID)
-	if _, err := b.buf.ReadFrom(item.Body); err != nil {
+	if _, err := io.CopyBuffer(&b.buf, item.Body, nil); err != nil {
 		return err
 	}
 	if _, err := b.buf.WriteString("\n"); err != nil {
