@@ -19,13 +19,13 @@ package docappender
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 
+	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -52,8 +52,6 @@ type bulkIndexer struct {
 	bytesFlushed int
 	jsonw        fastjson.Writer
 	gzipw        *gzip.Writer
-	copybuf      [32 * 1024]byte
-	writer       io.Writer
 	buf          bytes.Buffer
 	resp         esutil.BulkIndexerResponse
 }
@@ -61,10 +59,7 @@ type bulkIndexer struct {
 func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
 	b := &bulkIndexer{client: client}
 	if compressionLevel != gzip.NoCompression {
-		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
-		b.writer = b.gzipw
-	} else {
-		b.writer = &b.buf
+		b.gzipw, _ = gzip.NewWriterLevel(nil, compressionLevel)
 	}
 	b.Reset()
 	return b
@@ -75,7 +70,7 @@ func (b *bulkIndexer) Reset() {
 	b.itemsAdded, b.bytesFlushed = 0, 0
 	b.buf.Reset()
 	if b.gzipw != nil {
-		b.gzipw.Reset(&b.buf)
+		b.gzipw.Reset(nil)
 	}
 	b.resp = esutil.BulkIndexerResponse{Items: b.resp.Items[:0]}
 }
@@ -105,10 +100,10 @@ type bulkIndexerItem struct {
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	b.writeMeta(item.Index, item.Action, item.DocumentID)
-	if _, err := io.CopyBuffer(b.writer, item.Body, b.copybuf[:]); err != nil {
+	if _, err := io.CopyBuffer(&b.buf, item.Body, nil); err != nil {
 		return err
 	}
-	if _, err := b.writer.Write([]byte("\n")); err != nil {
+	if _, err := b.buf.WriteString("\n"); err != nil {
 		return err
 	}
 	b.itemsAdded++
@@ -131,7 +126,7 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 		b.jsonw.String(index)
 	}
 	b.jsonw.RawString("}}\n")
-	b.writer.Write(b.jsonw.Bytes())
+	b.buf.Write(b.jsonw.Bytes())
 	b.jsonw.Reset()
 }
 
@@ -140,20 +135,31 @@ func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, er
 	if b.itemsAdded == 0 {
 		return esutil.BulkIndexerResponse{}, nil
 	}
+
+	bbuf := &b.buf
+
 	if b.gzipw != nil {
+		arr := make([]byte, 0, b.buf.Len())
+		buf := bytes.NewBuffer(arr)
+
+		b.gzipw.Reset(buf)
+		b.gzipw.Write(b.buf.Bytes())
+
 		if err := b.gzipw.Close(); err != nil {
 			return esutil.BulkIndexerResponse{}, fmt.Errorf(
 				"failed closing the gzip writer: %w", err,
 			)
 		}
+
+		bbuf = buf
 	}
 
-	req := esapi.BulkRequest{Body: &b.buf, Header: make(http.Header)}
+	req := esapi.BulkRequest{Body: bbuf, Header: make(http.Header)}
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
-	bytesFlushed := b.buf.Len()
+	bytesFlushed := bbuf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
 		return esutil.BulkIndexerResponse{}, err
