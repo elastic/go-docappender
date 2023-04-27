@@ -56,8 +56,9 @@ go.elastic.co/apm/module/apmhttp/v2 v2.2.0/go.mod h1:lA/MHCxZkURm66gWHzgggOhArLr
 go.elastic.co/apm/module/apmzap/v2 v2.3.0 h1:jwxdgAPeH4wRbWVSI3CYymlDNw6j983Up7W2lW3UmaM=
 go.elastic.co/apm/module/apmzap/v2 v2.3.0/go.mod h1:x+2LUqavbVCYGcV7cxBnYsKKbOnbkIQwNpFof/qzS2M=
 go.elastic.co/apm/v2 v2.2.0/go.mod h1:KGQn56LtRmkQjt2qw4+c1Jz8gv9rCBUU/m21uxrqcps=
-go.elastic.co/apm/v2 v2.3.0 h1:jsZQsGWyMyga6xRMcYhKtPvrr5en8wqbmJNmxltST/E=
 go.elastic.co/apm/v2 v2.3.0/go.mod h1:HdwVuAeoJMmoqAZZBNN2YVzj3UVLebtqoRCCydyCP+Q=
+go.elastic.co/apm/v2 v2.4.1 h1:tMxAtHh5TXTYdFG0pTmmUOn/PTI3k/1T1ptb+3O+hYI=
+go.elastic.co/apm/v2 v2.4.1/go.mod h1:HdwVuAeoJMmoqAZZBNN2YVzj3UVLebtqoRCCydyCP+Q=
 go.elastic.co/fastjson v1.1.0 h1:3MrGBWWVIxe/xvsbpghtkFoPciPhOCmjsR/HfwEeQR4=
 go.elastic.co/fastjson v1.1.0/go.mod h1:boNGISWMjQsUPy/t6yqt2/1Wx4YNPSe+mZjlyw9vKKI=
 go.uber.org/atomic v1.3.2/go.mod h1:gD2HeocX3+yG+ygLZcrzQJaqmWj9AIm7n08wl/qW/PE=
