@@ -36,7 +36,6 @@ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZN
 github.com/prometheus/procfs v0.0.0-20190425082905-87a4384529e0/go.mod h1:TjEm7ze935MbeOT/UhFTIMYKhuLP4wbCsTZCD3I8kEA=
 github.com/prometheus/procfs v0.7.3 h1:4jVXhlkAyzOScmCkXBTOLRLTz8EeU+eyjrwB/EPq0VU=
 github.com/prometheus/procfs v0.7.3/go.mod h1:cz+aTbrPOrUb4q7XlbU9ygM+/jj0fzG6c1xBZuNvfVA=
-github.com/santhosh-tekuri/jsonschema v1.2.4/go.mod h1:TEAUOeZSmIxTTuHatJzrvARHiuO9LYd+cIxzgEHCQI4=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=
@@ -49,13 +48,12 @@ github.com/stretchr/testify v1.8.2/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.4.0/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
 github.com/yuin/goldmark v1.4.1/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
-go.elastic.co/apm/module/apmelasticsearch/v2 v2.2.0 h1:Swkcjk/V4CrwQuBmwU3KstCSV2bW751klEE5xU2VmeA=
-go.elastic.co/apm/module/apmelasticsearch/v2 v2.2.0/go.mod h1:LkilzzHm6a88afobN+JyzGEjSdfbFIDiTFCUP6AgTzw=
-go.elastic.co/apm/module/apmhttp/v2 v2.2.0 h1:FH+rZLLfkKiqhjqHZjiSdi8jn6VcqIkwUR2lLuWQFZU=
-go.elastic.co/apm/module/apmhttp/v2 v2.2.0/go.mod h1:lA/MHCxZkURm66gWHzgggOhArLr8a3DlHuX0YJ8oZqY=
+go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.1 h1:JcERpDUfaheW6k3Smmx1bfyFe4PcmFU6RMaBzsLwS8M=
+go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.1/go.mod h1:zurLQudUp3VSmmLEoYpIP2OkLzsDYOkTWulGZYA2bE8=
+go.elastic.co/apm/module/apmhttp/v2 v2.4.1 h1:4jIuTNh14opEIwf+zMru1jGW3MuNj6vtI0dsx+6QMt0=
+go.elastic.co/apm/module/apmhttp/v2 v2.4.1/go.mod h1:pJ2sd5b4YCX1YX9VzhvFO6AXpqCPiP3dP5U9qBD4s+8=
 go.elastic.co/apm/module/apmzap/v2 v2.3.0 h1:jwxdgAPeH4wRbWVSI3CYymlDNw6j983Up7W2lW3UmaM=
 go.elastic.co/apm/module/apmzap/v2 v2.3.0/go.mod h1:x+2LUqavbVCYGcV7cxBnYsKKbOnbkIQwNpFof/qzS2M=
-go.elastic.co/apm/v2 v2.2.0/go.mod h1:KGQn56LtRmkQjt2qw4+c1Jz8gv9rCBUU/m21uxrqcps=
 go.elastic.co/apm/v2 v2.3.0/go.mod h1:HdwVuAeoJMmoqAZZBNN2YVzj3UVLebtqoRCCydyCP+Q=
 go.elastic.co/apm/v2 v2.4.1 h1:tMxAtHh5TXTYdFG0pTmmUOn/PTI3k/1T1ptb+3O+hYI=
 go.elastic.co/apm/v2 v2.4.1/go.mod h1:HdwVuAeoJMmoqAZZBNN2YVzj3UVLebtqoRCCydyCP+Q=
