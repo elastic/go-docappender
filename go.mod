@@ -10,7 +10,7 @@ require (
 	go.elastic.co/apm/v2 v2.4.1
 	go.elastic.co/fastjson v1.1.0
 	go.uber.org/zap v1.24.0
-	golang.org/x/sync v0.1.0
+	golang.org/x/sync v0.2.0
 )
 
 require (
