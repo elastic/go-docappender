@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.7.1
 	github.com/stretchr/testify v1.8.3
-	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.1
+	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.2
 	go.elastic.co/apm/module/apmzap/v2 v2.4.1
 	go.elastic.co/apm/v2 v2.4.2
 	go.elastic.co/fastjson v1.1.0
@@ -24,7 +24,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	go.elastic.co/apm/module/apmhttp/v2 v2.4.1 // indirect
+	go.elastic.co/apm/module/apmhttp/v2 v2.4.2 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/sys v0.0.0-20220209214540-3681064d5158 // indirect
