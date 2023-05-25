@@ -61,6 +61,8 @@ type Appender struct {
 	docsAdded             int64
 	docsActive            int64
 	docsFailed            int64
+	docsFailedClient      int64
+	docsFailedServer      int64
 	docsIndexed           int64
 	tooManyRequests       int64
 	bytesTotal            int64
@@ -178,6 +180,8 @@ func (a *Appender) Stats() Stats {
 		Active:                atomic.LoadInt64(&a.docsActive),
 		BulkRequests:          atomic.LoadInt64(&a.bulkRequests),
 		Failed:                atomic.LoadInt64(&a.docsFailed),
+		FailedClient:          atomic.LoadInt64(&a.docsFailedClient),
+		FailedServer:          atomic.LoadInt64(&a.docsFailedServer),
 		Indexed:               atomic.LoadInt64(&a.docsIndexed),
 		TooManyRequests:       atomic.LoadInt64(&a.tooManyRequests),
 		BytesTotal:            atomic.LoadInt64(&a.bytesTotal),
@@ -265,13 +269,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		}
 		return err
 	}
-	var docsFailed, docsIndexed, tooManyRequests int64
+	var docsFailed, docsIndexed, tooManyRequests, clientFailed, serverFailed int64
 	for _, item := range resp.Items {
 		for _, info := range item {
 			if info.Error.Type != "" || info.Status > 201 {
 				docsFailed++
+				if info.Status >= 400 && info.Status < 500 {
+					clientFailed++
+				}
 				if info.Status == http.StatusTooManyRequests {
 					tooManyRequests++
+				}
+				if info.Status >= 500 {
+					serverFailed++
 				}
 				// NOTE(axw) error type and reason are included
 				// in the error message so we can observe different
@@ -293,6 +303,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	}
 	if tooManyRequests > 0 {
 		atomic.AddInt64(&a.tooManyRequests, tooManyRequests)
+	}
+	if clientFailed > 0 {
+		atomic.AddInt64(&a.docsFailedClient, clientFailed)
+	}
+	if serverFailed > 0 {
+		atomic.AddInt64(&a.docsFailedServer, serverFailed)
 	}
 	logger.Debug(
 		"bulk request completed",
@@ -564,6 +580,14 @@ type Stats struct {
 
 	// Failed holds the number of indexing operations that failed.
 	Failed int64
+
+	// FailedClient holds the number of indexing operations that failed with a
+	// status_code >= 400 < 500.
+	FailedClient int64
+
+	// FailedClient holds the number of indexing operations that failed with a
+	// status_code >= 500.
+	FailedServer int64
 
 	// Indexed holds the number of indexing operations that have completed
 	// successfully.
