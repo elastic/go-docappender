@@ -102,6 +102,8 @@ loop:
 		Active:                0,
 		BulkRequests:          1,
 		Failed:                2,
+		FailedClient:          1,
+		FailedServer:          1,
 		Indexed:               N - 2,
 		TooManyRequests:       1,
 		AvailableBulkRequests: 10,
