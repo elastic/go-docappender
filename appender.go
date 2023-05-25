@@ -275,10 +275,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 			if info.Error.Type != "" || info.Status > 201 {
 				docsFailed++
 				if info.Status >= 400 && info.Status < 500 {
-					clientFailed++
-				}
-				if info.Status == http.StatusTooManyRequests {
-					tooManyRequests++
+					if info.Status == http.StatusTooManyRequests {
+						tooManyRequests++
+					} else {
+						clientFailed++
+					}
 				}
 				if info.Status >= 500 {
 					serverFailed++
@@ -578,11 +579,12 @@ type Stats struct {
 	// BulkRequests holds the number of bulk requests completed.
 	BulkRequests int64
 
-	// Failed holds the number of indexing operations that failed.
+	// Failed holds the number of indexing operations that failed. It includes
+	// All failures.
 	Failed int64
 
 	// FailedClient holds the number of indexing operations that failed with a
-	// status_code >= 400 < 500.
+	// status_code >= 400 < 500, but not 429.
 	FailedClient int64
 
 	// FailedClient holds the number of indexing operations that failed with a

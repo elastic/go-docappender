@@ -51,12 +51,15 @@ func TestAppender(t *testing.T) {
 		// "too many requests". These will be recorded as failures in indexing
 		// stats.
 		for i := range result.Items {
-			if i >= 2 {
+			if i > 2 {
 				break
 			}
 			status := http.StatusInternalServerError
-			if i == 1 {
+			switch i {
+			case 1:
 				status = http.StatusTooManyRequests
+			case 2:
+				status = http.StatusUnauthorized
 			}
 			for action, item := range result.Items[i] {
 				item.Status = status
@@ -97,14 +100,15 @@ loop:
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
 	stats := indexer.Stats()
+	failed := int64(3)
 	assert.Equal(t, docappender.Stats{
 		Added:                 N,
 		Active:                0,
 		BulkRequests:          1,
-		Failed:                2,
+		Failed:                failed,
 		FailedClient:          1,
 		FailedServer:          1,
-		Indexed:               N - 2,
+		Indexed:               N - failed,
 		TooManyRequests:       1,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
