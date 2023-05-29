@@ -580,7 +580,7 @@ type Stats struct {
 	BulkRequests int64
 
 	// Failed holds the number of indexing operations that failed. It includes
-	// All failures.
+	// all failures.
 	Failed int64
 
 	// FailedClient holds the number of indexing operations that failed with a
