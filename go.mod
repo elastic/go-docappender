@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.8.1
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.8.4
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.2
 	go.elastic.co/apm/module/apmzap/v2 v2.4.2
 	go.elastic.co/apm/v2 v2.4.2
