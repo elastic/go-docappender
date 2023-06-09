@@ -3,7 +3,7 @@ module github.com/elastic/go-docappender
 go 1.19
 
 require (
-	github.com/elastic/go-elasticsearch/v8 v8.7.1
+	github.com/elastic/go-elasticsearch/v8 v8.8.1
 	github.com/stretchr/testify v1.8.3
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.2
 	go.elastic.co/apm/module/apmzap/v2 v2.4.2
@@ -16,7 +16,7 @@ require (
 require (
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.2.0 // indirect
+	github.com/elastic/elastic-transport-go/v8 v8.3.0 // indirect
 	github.com/elastic/go-sysinfo v1.7.1 // indirect
 	github.com/elastic/go-windows v1.0.1 // indirect
 	github.com/google/go-cmp v0.5.4 // indirect
