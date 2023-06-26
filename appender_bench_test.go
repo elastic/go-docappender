@@ -155,11 +155,18 @@ func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 	})
 	b.SetBytes(int64(documentBody.Len())) // bytes processed each iteration
 
+	// We can't pass context.Background() to the indexer because it's using
+	// a nil channel under the hood, speeding up the select statement.
+	// That creates misleading benchmark results as they do not reflect
+	// production usage.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			documentBodyCopy := *documentBody
-			if err := indexer.Add(context.Background(), "logs-foo-testing", &documentBodyCopy); err != nil {
+			if err := indexer.Add(ctx, "logs-foo-testing", &documentBodyCopy); err != nil {
 				b.Fatal(err)
 			}
 		}
