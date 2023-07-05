@@ -3,7 +3,7 @@ module github.com/elastic/go-docappender
 go 1.19
 
 require (
-	github.com/elastic/go-elasticsearch/v8 v8.8.1
+	github.com/elastic/go-elasticsearch/v8 v8.8.2
 	github.com/goccy/go-json v0.10.2
 	github.com/stretchr/testify v1.8.4
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.3
