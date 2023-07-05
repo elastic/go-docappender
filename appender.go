@@ -288,8 +288,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 				// in the error message so we can observe different
 				// error types/reasons when logging is rate limited.
 				logger.Error(fmt.Sprintf(
-					"failed to index document (%s): %s",
-					info.Error.Type, info.Error.Reason,
+					"failed to index document in '%s' (%s): %s",
+					info.Index, info.Error.Type, info.Error.Reason,
 				))
 			} else {
 				docsIndexed++

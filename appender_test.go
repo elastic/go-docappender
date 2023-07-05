@@ -353,6 +353,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 		_, result := docappendertest.DecodeBulkRequest(r)
 		for i, item := range result.Items {
 			itemResp := item["create"]
+			itemResp.Index = "an_index"
 			itemResp.Error.Type = "error_type"
 			if i%2 == 0 {
 				itemResp.Error.Reason = "error_reason_even"
@@ -382,10 +383,10 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 
 	entries := observed.FilterMessageSnippet("failed to index document").TakeAll()
 	require.Len(t, entries, N)
-	assert.Equal(t, "failed to index document (error_type): error_reason_even", entries[0].Message)
-	assert.Equal(t, "failed to index document (error_type): error_reason_odd", entries[1].Message)
-	assert.Equal(t, "failed to index document (error_type): error_reason_even", entries[2].Message)
-	assert.Equal(t, "failed to index document (error_type): error_reason_odd", entries[3].Message)
+	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_even", entries[0].Message)
+	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_odd", entries[1].Message)
+	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_even", entries[2].Message)
+	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_odd", entries[3].Message)
 }
 
 func TestAppenderCloseFlushContext(t *testing.T) {
