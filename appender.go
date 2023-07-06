@@ -237,10 +237,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	defer atomic.AddInt64(&a.docsActive, -int64(n))
 	defer atomic.AddInt64(&a.bulkRequests, 1)
 
-	var tx *apm.Transaction
 	logger := a.config.Logger
-	if a.config.Tracer != nil && a.config.Tracer.Recording() {
-		tx = a.config.Tracer.StartTransaction("flush", "output")
+	if a.tracingEnabled() {
+		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
 		defer tx.End()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
@@ -258,7 +257,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	if err != nil {
 		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
-		if tx != nil {
+		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
 		}
 
@@ -533,6 +532,11 @@ func (a *Appender) scalingInformation() scalingInfo {
 func (a *Appender) indexFailureRate() float64 {
 	return float64(atomic.LoadInt64(&a.tooManyRequests)) /
 		float64(atomic.LoadInt64(&a.docsAdded))
+}
+
+// tracingEnabled checks whether we should be doing tracing
+func (a *Appender) tracingEnabled() bool {
+	return a.config.Tracer != nil && a.config.Tracer.Recording()
 }
 
 // activeLimit returns the value of GOMAXPROCS / 4. Which should limit the
