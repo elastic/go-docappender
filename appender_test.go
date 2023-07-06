@@ -876,7 +876,7 @@ func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 
 	assert.Equal(t, expectedOutcome, payloads.Transactions[0].Outcome)
 	assert.Equal(t, "output", payloads.Transactions[0].Type)
-	assert.Equal(t, "flush", payloads.Transactions[0].Name)
+	assert.Equal(t, "docappender.flush", payloads.Transactions[0].Name)
 	assert.Equal(t, "Elasticsearch: POST _bulk", payloads.Spans[0].Name)
 	assert.Equal(t, "db", payloads.Spans[0].Type)
 	assert.Equal(t, "elasticsearch", payloads.Spans[0].Subtype)
