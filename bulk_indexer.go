@@ -57,7 +57,8 @@ type bulkIndexer struct {
 	resp         MinimalBulkIndexerResponse
 }
 
-type MinimalBulkIndexerResponse struct {
+// BulkIndexerResponse represents a minimal subset of the Elasticsearch _bulk API response.
+type BulkIndexerResponse struct {
 	Items []map[string]BulkIndexerResponseItem `json:"items,omitempty"`
 }
 
