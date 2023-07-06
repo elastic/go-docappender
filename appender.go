@@ -290,6 +290,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 					"failed to index document in '%s' (%s): %s",
 					info.Index, info.Error.Type, info.Error.Reason,
 				))
+
+				if a.tracingEnabled() {
+					apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
+				}
 			} else {
 				docsIndexed++
 			}
