@@ -65,7 +65,6 @@ type MinimalBulkIndexerResponse struct {
 type BulkIndexerResponseItem struct {
 	Index  string `json:"_index"`
 	Status int    `json:"status"`
-	SeqNo  int64  `json:"_seq_no"`
 
 	Error struct {
 		Type   string `json:"type"`
