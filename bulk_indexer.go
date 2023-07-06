@@ -29,7 +29,6 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 	"github.com/goccy/go-json"
 )
 
@@ -55,7 +54,23 @@ type bulkIndexer struct {
 	copybuf      [32 * 1024]byte
 	writer       io.Writer
 	buf          bytes.Buffer
-	resp         esutil.BulkIndexerResponse
+	resp         MinimalBulkIndexerResponse
+}
+
+type MinimalBulkIndexerResponse struct {
+	Items []map[string]BulkIndexerResponseItem `json:"items,omitempty"`
+}
+
+// BulkIndexerResponseItem represents the Elasticsearch response item.
+type BulkIndexerResponseItem struct {
+	Index  string `json:"_index"`
+	Status int    `json:"status"`
+	SeqNo  int64  `json:"_seq_no"`
+
+	Error struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+	} `json:"error,omitempty"`
 }
 
 func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
@@ -77,7 +92,7 @@ func (b *bulkIndexer) Reset() {
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
 	}
-	b.resp = esutil.BulkIndexerResponse{Items: b.resp.Items[:0]}
+	b.resp = MinimalBulkIndexerResponse{Items: b.resp.Items[:0]}
 }
 
 // Added returns the number of buffered items.
@@ -136,13 +151,13 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, error) {
+func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, error) {
 	if b.itemsAdded == 0 {
-		return esutil.BulkIndexerResponse{}, nil
+		return MinimalBulkIndexerResponse{}, nil
 	}
 	if b.gzipw != nil {
 		if err := b.gzipw.Close(); err != nil {
-			return esutil.BulkIndexerResponse{}, fmt.Errorf(
+			return MinimalBulkIndexerResponse{}, fmt.Errorf(
 				"failed closing the gzip writer: %w", err,
 			)
 		}
@@ -156,7 +171,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, er
 	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
-		return esutil.BulkIndexerResponse{}, err
+		return MinimalBulkIndexerResponse{}, err
 	}
 	defer res.Body.Close()
 	// Record the number of flushed bytes only when err == nil. The body may
@@ -164,12 +179,12 @@ func (b *bulkIndexer) Flush(ctx context.Context) (esutil.BulkIndexerResponse, er
 	b.bytesFlushed = bytesFlushed
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
-			return esutil.BulkIndexerResponse{}, errorTooManyRequests{res: res}
+			return MinimalBulkIndexerResponse{}, errorTooManyRequests{res: res}
 		}
-		return esutil.BulkIndexerResponse{}, fmt.Errorf("flush failed: %s", res.String())
+		return MinimalBulkIndexerResponse{}, fmt.Errorf("flush failed: %s", res.String())
 	}
 	if err := json.NewDecoder(res.Body).Decode(&b.resp); err != nil {
-		return esutil.BulkIndexerResponse{}, fmt.Errorf("error decoding bulk response: %w", err)
+		return MinimalBulkIndexerResponse{}, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 	return b.resp, nil
 }
