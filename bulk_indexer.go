@@ -186,7 +186,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, er
 
 	rspBody, err := io.ReadAll(res.Body)
 	if err != nil {
-		return MinimalBulkIndexerResponse{}, err
+		return MinimalBulkIndexerResponse{}, fmt.Errorf("error reading response body: %w", err)
 	}
 
 	gjson.GetBytes(rspBody, "items").ForEach(func(key, value gjson.Result) bool {
@@ -207,7 +207,6 @@ func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, er
 			}
 
 			b.resp.Items = append(b.resp.Items, item)
-			//*s = append(*s, item)
 			return true
 		})
 		return true
