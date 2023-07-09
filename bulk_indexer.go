@@ -29,7 +29,7 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/goccy/go-json"
+	"github.com/tidwall/gjson"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -59,7 +59,7 @@ type bulkIndexer struct {
 
 // MinimalBulkIndexerResponse represents a minimal subset of the Elasticsearch _bulk API response.
 type MinimalBulkIndexerResponse struct {
-	Items []map[string]BulkIndexerResponseItem `json:"items,omitempty"`
+	Items []BulkIndexerResponseItem `json:"items,omitempty"`
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -183,9 +183,36 @@ func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, er
 		}
 		return MinimalBulkIndexerResponse{}, fmt.Errorf("flush failed: %s", res.String())
 	}
-	if err := json.NewDecoder(res.Body).Decode(&b.resp); err != nil {
-		return MinimalBulkIndexerResponse{}, fmt.Errorf("error decoding bulk response: %w", err)
+
+	rspBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return MinimalBulkIndexerResponse{}, err
 	}
+
+	gjson.GetBytes(rspBody, "items").ForEach(func(key, value gjson.Result) bool {
+		value.ForEach(func(key, value gjson.Result) bool {
+			item := BulkIndexerResponseItem{
+				Index:  value.Get("_index").String(),
+				Status: int(value.Get("status").Int()),
+			}
+
+			if e := value.Get("error"); e.Exists() {
+				item.Error = struct {
+					Type   string `json:"type"`
+					Reason string `json:"reason"`
+				}{
+					Type:   e.Get("type").String(),
+					Reason: e.Get("reason").String(),
+				}
+			}
+
+			b.resp.Items = append(b.resp.Items, item)
+			//*s = append(*s, item)
+			return true
+		})
+		return true
+	})
+
 	return b.resp, nil
 }
 
