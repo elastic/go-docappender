@@ -269,34 +269,32 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		return err
 	}
 	var docsFailed, docsIndexed, tooManyRequests, clientFailed, serverFailed int64
-	for _, item := range resp.Items {
-		for _, info := range item {
-			if info.Error.Type != "" || info.Status > 201 {
-				docsFailed++
-				if info.Status >= 400 && info.Status < 500 {
-					if info.Status == http.StatusTooManyRequests {
-						tooManyRequests++
-					} else {
-						clientFailed++
-					}
+	for _, info := range resp {
+		if info.Error.Type != "" || info.Status > 201 {
+			docsFailed++
+			if info.Status >= 400 && info.Status < 500 {
+				if info.Status == http.StatusTooManyRequests {
+					tooManyRequests++
+				} else {
+					clientFailed++
 				}
-				if info.Status >= 500 {
-					serverFailed++
-				}
-				// NOTE(axw) error type and reason are included
-				// in the error message so we can observe different
-				// error types/reasons when logging is rate limited.
-				logger.Error(fmt.Sprintf(
-					"failed to index document in '%s' (%s): %s",
-					info.Index, info.Error.Type, info.Error.Reason,
-				))
-
-				if a.tracingEnabled() {
-					apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
-				}
-			} else {
-				docsIndexed++
 			}
+			if info.Status >= 500 {
+				serverFailed++
+			}
+			// NOTE(axw) error type and reason are included
+			// in the error message so we can observe different
+			// error types/reasons when logging is rate limited.
+			logger.Error(fmt.Sprintf(
+				"failed to index document in '%s' (%s): %s",
+				info.Index, info.Error.Type, info.Error.Reason,
+			))
+
+			if a.tracingEnabled() {
+				apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
+			}
+		} else {
+			docsIndexed++
 		}
 	}
 	if docsFailed > 0 {

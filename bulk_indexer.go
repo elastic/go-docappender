@@ -29,7 +29,7 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/goccy/go-json"
+	"github.com/tidwall/gjson"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -54,12 +54,7 @@ type bulkIndexer struct {
 	copybuf      [32 * 1024]byte
 	writer       io.Writer
 	buf          bytes.Buffer
-	resp         MinimalBulkIndexerResponse
-}
-
-// MinimalBulkIndexerResponse represents a minimal subset of the Elasticsearch _bulk API response.
-type MinimalBulkIndexerResponse struct {
-	Items []map[string]BulkIndexerResponseItem `json:"items,omitempty"`
+	resp         []BulkIndexerResponseItem
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -92,7 +87,7 @@ func (b *bulkIndexer) Reset() {
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
 	}
-	b.resp = MinimalBulkIndexerResponse{Items: b.resp.Items[:0]}
+	b.resp = b.resp[:0]
 }
 
 // Added returns the number of buffered items.
@@ -151,15 +146,13 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, error) {
+func (b *bulkIndexer) Flush(ctx context.Context) ([]BulkIndexerResponseItem, error) {
 	if b.itemsAdded == 0 {
-		return MinimalBulkIndexerResponse{}, nil
+		return nil, nil
 	}
 	if b.gzipw != nil {
 		if err := b.gzipw.Close(); err != nil {
-			return MinimalBulkIndexerResponse{}, fmt.Errorf(
-				"failed closing the gzip writer: %w", err,
-			)
+			return nil, fmt.Errorf("failed closing the gzip writer: %w", err)
 		}
 	}
 
@@ -171,7 +164,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, er
 	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
-		return MinimalBulkIndexerResponse{}, err
+		return nil, err
 	}
 	defer res.Body.Close()
 	// Record the number of flushed bytes only when err == nil. The body may
@@ -179,13 +172,39 @@ func (b *bulkIndexer) Flush(ctx context.Context) (MinimalBulkIndexerResponse, er
 	b.bytesFlushed = bytesFlushed
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
-			return MinimalBulkIndexerResponse{}, errorTooManyRequests{res: res}
+			return nil, errorTooManyRequests{res: res}
 		}
-		return MinimalBulkIndexerResponse{}, fmt.Errorf("flush failed: %s", res.String())
+		return nil, fmt.Errorf("flush failed: %s", res.String())
 	}
-	if err := json.NewDecoder(res.Body).Decode(&b.resp); err != nil {
-		return MinimalBulkIndexerResponse{}, fmt.Errorf("error decoding bulk response: %w", err)
+
+	rspBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
+
+	gjson.GetBytes(rspBody, "items").ForEach(func(key, value gjson.Result) bool {
+		value.ForEach(func(key, value gjson.Result) bool {
+			item := BulkIndexerResponseItem{
+				Index:  value.Get("_index").String(),
+				Status: int(value.Get("status").Int()),
+			}
+
+			if e := value.Get("error"); e.Exists() {
+				item.Error = struct {
+					Type   string `json:"type"`
+					Reason string `json:"reason"`
+				}{
+					Type:   e.Get("type").String(),
+					Reason: e.Get("reason").String(),
+				}
+			}
+
+			b.resp = append(b.resp, item)
+			return true
+		})
+		return true
+	})
+
 	return b.resp, nil
 }
 
