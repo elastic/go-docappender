@@ -240,6 +240,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	logger := a.config.Logger
 	if a.tracingEnabled() {
 		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
+		tx.Context.SetLabel("documents", n)
 		defer tx.End()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
