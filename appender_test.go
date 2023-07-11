@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/v2/apmtest"
+	"go.elastic.co/apm/v2/model"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -876,6 +877,9 @@ func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 
 	assert.Equal(t, expectedOutcome, payloads.Transactions[0].Outcome)
 	assert.Equal(t, "output", payloads.Transactions[0].Type)
+	assert.Equal(t, model.IfaceMapItem{Key: "documents", Value: float64(N)},
+		payloads.Transactions[0].Context.Tags[0],
+	)
 	assert.Equal(t, "docappender.flush", payloads.Transactions[0].Name)
 	assert.Equal(t, "Elasticsearch: POST _bulk", payloads.Spans[0].Name)
 	assert.Equal(t, "db", payloads.Spans[0].Type)
