@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"go.elastic.co/apm/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
@@ -70,12 +72,20 @@ type Config struct {
 	// If DocumentBufferSize is zero, the default 1024 will be used.
 	DocumentBufferSize int
 
-	// Tracer holds an optional apm.Tracer to use for tracing bulk requests
-	// to Elasticsearch. Each bulk request is traced as a transaction.
 	// Scaling configuration for the docappender.
 	//
 	// If unspecified, scaling is enabled by default.
 	Scaling ScalingConfig
+
+	// MeterProvider holds the OTel MeterProvider to be used to create and
+	// record appender metrics.
+	//
+	// If unset, no OTel metrics will be recorded.
+	MeterProvider metric.MeterProvider
+
+	// MetricAttributes holds any extra attributes to set in the recorded
+	// metrics.
+	MetricAttributes []attribute.KeyValue
 }
 
 // ScalingConfig holds the docappender autoscaling configuration.
