@@ -264,7 +264,7 @@ func TestAppenderFlushInterval(t *testing.T) {
 }
 
 func TestAppenderFlushMetric(t *testing.T) {
-	requests := make(chan esutil.BulkIndexerResponse, 0)
+	requests := make(chan esutil.BulkIndexerResponse)
 	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
 		_, items := docappendertest.DecodeBulkRequest(r)
 		select {
