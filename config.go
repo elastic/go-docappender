@@ -80,7 +80,8 @@ type Config struct {
 	// MeterProvider holds the OTel MeterProvider to be used to create and
 	// record appender metrics.
 	//
-	// If unset, no OTel metrics will be recorded.
+	// If unset, the global OTel MeterProvider will be used, if that is unset,
+	// no metrics will be recorded.
 	MeterProvider metric.MeterProvider
 
 	// MetricAttributes holds any extra attributes to set in the recorded
