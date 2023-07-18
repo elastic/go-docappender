@@ -33,6 +33,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/v2/apmtest"
 	"go.elastic.co/apm/v2/model"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -258,6 +261,87 @@ func TestAppenderFlushInterval(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for request, flush interval elapsed")
 	}
+}
+
+func TestAppenderFlushMetric(t *testing.T) {
+	requests := make(chan esutil.BulkIndexerResponse)
+	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
+		_, items := docappendertest.DecodeBulkRequest(r)
+		select {
+		case <-r.Context().Done():
+		case requests <- items:
+		}
+	})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.DeltaTemporality
+		},
+	))
+
+	indexerAttrs := []attribute.KeyValue{
+		attribute.String("a", "b"), attribute.String("c", "d"),
+	}
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushBytes:       1,
+		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+		MetricAttributes: indexerAttrs,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	select {
+	case <-requests:
+		t.Fatal("unexpected request, no documents buffered")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	docs := 10
+	for i := 0; i < docs; i++ {
+		addMinimalDoc(t, indexer, fmt.Sprintf("logs-foo-testing-%d", i))
+	}
+
+	timeout := time.After(time.Second)
+	for i := 0; i < docs; i++ {
+		select {
+		case res := <-requests:
+			assert.Len(t, res.Items, 1)
+		case <-timeout:
+			t.Fatal("timed out waiting for request, flush interval elapsed")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(ctx, &rm))
+
+	var asserted int
+	assertHistogram := func(latencyMetric metricdata.Metrics, count int, ignoreCount bool, attrs attribute.Set) {
+		asserted++
+		assert.Equal(t, "s", latencyMetric.Unit)
+		histo := latencyMetric.Data.(metricdata.Histogram[float64])
+		for _, dp := range histo.DataPoints {
+			if !ignoreCount {
+				assert.Equal(t, count, int(dp.Count))
+			} else {
+				assert.Greater(t, int(dp.Count), count)
+			}
+			assert.Positive(t, dp.Sum)
+			assert.Equal(t, attrs, dp.Attributes)
+		}
+	}
+	wantAttrs := attribute.NewSet(indexerAttrs...)
+	for _, metric := range rm.ScopeMetrics[0].Metrics {
+		switch metric.Name {
+		case "elasticsearch.buffer.latency":
+			assertHistogram(metric, docs, false, wantAttrs)
+		case "elasticsearch.flushed.latency":
+			assertHistogram(metric, 2, true, wantAttrs)
+		}
+	}
+	assert.Equal(t, 2, asserted)
 }
 
 func TestAppenderFlushBytes(t *testing.T) {

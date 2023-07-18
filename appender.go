@@ -32,6 +32,9 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -78,6 +81,9 @@ type Appender struct {
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
+	bufferDuration        metric.Float64Histogram
+	flushDuration         metric.Float64Histogram
+	telemetryAttrs        attribute.Set
 
 	mu     sync.Mutex
 	closed chan struct{}
@@ -120,6 +126,32 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 			cfg.Scaling.IdleInterval = 30 * time.Second
 		}
 	}
+	if cfg.MeterProvider == nil {
+		cfg.MeterProvider = otel.GetMeterProvider()
+	}
+	meter := cfg.MeterProvider.Meter("github.com/elastic/go-docappender")
+	bufDuration, err := meter.Float64Histogram("elasticsearch.buffer.latency",
+		metric.WithUnit("s"),
+		metric.WithDescription(
+			"The amount of time a document was buffered for, in seconds.",
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed creating elasticsearch.buffer.latency metric: %w", err,
+		)
+	}
+	flushDuration, err := meter.Float64Histogram("elasticsearch.flushed.latency",
+		metric.WithUnit("s"),
+		metric.WithDescription(
+			"The amount of time a _bulk request took, in seconds.",
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed creating elasticsearch.flushed.latency metric: %w", err,
+		)
+	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
 		available <- newBulkIndexer(client, cfg.CompressionLevel)
@@ -133,6 +165,9 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		available:             available,
 		closed:                make(chan struct{}),
 		bulkItems:             make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		bufferDuration:        bufDuration,
+		flushDuration:         flushDuration,
+		telemetryAttrs:        attribute.NewSet(cfg.MetricAttributes...),
 	}
 
 	// We create a cancellable context for the errgroup.Group for unblocking
@@ -336,8 +371,12 @@ func (a *Appender) runActiveIndexer() {
 	if !flushTimer.Stop() {
 		<-flushTimer.C
 	}
+	var firstDocTS time.Time
 	handleBulkItem := func(item bulkIndexerItem) {
 		if active == nil {
+			// NOTE(marclop) Record the TS when the first document is cached.
+			// It doesn't account for the time spent in the buffered channel.
+			firstDocTS = time.Now()
 			active = <-a.available
 			atomic.AddInt64(&a.availableBulkRequests, -1)
 			flushTimer.Reset(a.config.FlushInterval)
@@ -394,13 +433,23 @@ func (a *Appender) runActiveIndexer() {
 		if active != nil {
 			indexer := active
 			active = nil
+			attrs := metric.WithAttributeSet(a.telemetryAttrs)
 			a.errgroup.Go(func() error {
-				err := a.flush(a.errgroupContext, indexer)
+				var err error
+				took := timeFunc(func() {
+					err = a.flush(a.errgroupContext, indexer)
+				})
 				indexer.Reset()
 				a.available <- indexer
 				atomic.AddInt64(&a.availableBulkRequests, 1)
+				a.flushDuration.Record(context.Background(), took.Seconds(),
+					attrs,
+				)
 				return err
 			})
+			a.bufferDuration.Record(context.Background(),
+				time.Since(firstDocTS).Seconds(), attrs,
+			)
 		}
 		if a.config.Scaling.Disabled {
 			continue
@@ -627,4 +676,12 @@ type Stats struct {
 
 	// Downscales represents the number of times an active indexer was destroyed.
 	IndexersDestroyed int64
+}
+
+func timeFunc(f func()) time.Duration {
+	t0 := time.Now()
+	if f != nil {
+		f()
+	}
+	return time.Since(t0)
 }
