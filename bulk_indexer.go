@@ -24,12 +24,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"unsafe"
 
 	"go.elastic.co/fastjson"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/tidwall/gjson"
+	jsoniter "github.com/json-iterator/go"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -54,8 +55,10 @@ type bulkIndexer struct {
 	copybuf      [32 * 1024]byte
 	writer       io.Writer
 	buf          bytes.Buffer
-	resp         []BulkIndexerResponseItem
+	resp         BulkIndexerResponse
 }
+
+type BulkIndexerResponse []BulkIndexerResponseItem
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
 type BulkIndexerResponseItem struct {
@@ -66,6 +69,49 @@ type BulkIndexerResponseItem struct {
 		Type   string `json:"type"`
 		Reason string `json:"reason"`
 	} `json:"error,omitempty"`
+}
+
+func init() {
+	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponse", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
+		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
+			switch s {
+			case "items":
+				return iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
+					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
+						item := BulkIndexerResponseItem{}
+						retValue := i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
+							switch s {
+							case "_index":
+								item.Index = i.ReadString()
+							case "status":
+								item.Status = i.ReadInt()
+							case "error":
+								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
+									switch s {
+									case "type":
+										item.Error.Type = i.ReadString()
+									case "reason":
+										item.Error.Reason = i.ReadString()
+									default:
+										i.Skip()
+									}
+									return true
+								})
+							default:
+								i.Skip()
+							}
+							return true
+						})
+						(*((*BulkIndexerResponse)(ptr))) = append((*((*BulkIndexerResponse)(ptr))), item)
+						return retValue
+					})
+				})
+			default:
+				i.Skip()
+				return true
+			}
+		})
+	})
 }
 
 func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
@@ -177,33 +223,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) ([]BulkIndexerResponseItem, err
 		return nil, fmt.Errorf("flush failed: %s", res.String())
 	}
 
-	rspBody, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+	if err := jsoniter.NewDecoder(res.Body).Decode(&b.resp); err != nil {
+		return nil, err
 	}
-
-	gjson.GetBytes(rspBody, "items").ForEach(func(key, value gjson.Result) bool {
-		value.ForEach(func(key, value gjson.Result) bool {
-			item := BulkIndexerResponseItem{
-				Index:  value.Get("_index").String(),
-				Status: int(value.Get("status").Int()),
-			}
-
-			if e := value.Get("error"); e.Exists() {
-				item.Error = struct {
-					Type   string `json:"type"`
-					Reason string `json:"reason"`
-				}{
-					Type:   e.Get("type").String(),
-					Reason: e.Get("reason").String(),
-				}
-			}
-
-			b.resp = append(b.resp, item)
-			return true
-		})
-		return true
-	})
 
 	return b.resp, nil
 }
