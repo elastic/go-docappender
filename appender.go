@@ -305,7 +305,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		return err
 	}
 	var docsFailed, docsIndexed, tooManyRequests, clientFailed, serverFailed int64
-	for _, info := range resp {
+	docsIndexed = resp.Indexed
+	for _, info := range resp.FailedDocs {
 		if info.Error.Type != "" || info.Status > 201 {
 			docsFailed++
 			if info.Status >= 400 && info.Status < 500 {

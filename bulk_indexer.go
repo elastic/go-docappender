@@ -55,10 +55,12 @@ type bulkIndexer struct {
 	copybuf      [32 * 1024]byte
 	writer       io.Writer
 	buf          bytes.Buffer
-	resp         BulkIndexerResponse
 }
 
-type BulkIndexerResponse []BulkIndexerResponseItem
+type BulkIndexerResponseStat struct {
+	Indexed    int64
+	FailedDocs []BulkIndexerResponseItem
+}
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
 type BulkIndexerResponseItem struct {
@@ -72,14 +74,14 @@ type BulkIndexerResponseItem struct {
 }
 
 func init() {
-	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponse", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
+	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 			switch s {
 			case "items":
-				return iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
+				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
 						item := BulkIndexerResponseItem{}
-						retValue := i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
+						i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 							switch s {
 							case "_index":
 								item.Index = i.ReadString()
@@ -92,22 +94,23 @@ func init() {
 										item.Error.Type = i.ReadString()
 									case "reason":
 										item.Error.Reason = i.ReadString()
-									default:
-										i.Skip()
 									}
 									return true
 								})
-							default:
-								i.Skip()
 							}
 							return true
 						})
-						(*((*BulkIndexerResponse)(ptr))) = append((*((*BulkIndexerResponse)(ptr))), item)
-						return retValue
+						if item.Error.Type != "" || item.Status > 201 {
+							(*((*BulkIndexerResponseStat)(ptr))).FailedDocs = append((*((*BulkIndexerResponseStat)(ptr))).FailedDocs, item)
+						} else {
+							(*((*BulkIndexerResponseStat)(ptr))).Indexed = (*((*BulkIndexerResponseStat)(ptr))).Indexed + 1
+						}
+						return true
 					})
 				})
+				// no need to proceed further, return early
+				return false
 			default:
-				i.Skip()
 				return true
 			}
 		})
@@ -133,7 +136,6 @@ func (b *bulkIndexer) Reset() {
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
 	}
-	b.resp = b.resp[:0]
 }
 
 // Added returns the number of buffered items.
@@ -192,13 +194,13 @@ func (b *bulkIndexer) writeMeta(index, action, documentID string) {
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *bulkIndexer) Flush(ctx context.Context) ([]BulkIndexerResponseItem, error) {
+func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
-		return nil, nil
+		return BulkIndexerResponseStat{}, nil
 	}
 	if b.gzipw != nil {
 		if err := b.gzipw.Close(); err != nil {
-			return nil, fmt.Errorf("failed closing the gzip writer: %w", err)
+			return BulkIndexerResponseStat{}, fmt.Errorf("failed closing the gzip writer: %w", err)
 		}
 	}
 
@@ -210,7 +212,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) ([]BulkIndexerResponseItem, err
 	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
-		return nil, err
+		return BulkIndexerResponseStat{}, err
 	}
 	defer res.Body.Close()
 	// Record the number of flushed bytes only when err == nil. The body may
@@ -218,16 +220,18 @@ func (b *bulkIndexer) Flush(ctx context.Context) ([]BulkIndexerResponseItem, err
 	b.bytesFlushed = bytesFlushed
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
-			return nil, errorTooManyRequests{res: res}
+			return BulkIndexerResponseStat{}, errorTooManyRequests{res: res}
 		}
-		return nil, fmt.Errorf("flush failed: %s", res.String())
+		return BulkIndexerResponseStat{}, fmt.Errorf("flush failed: %s", res.String())
 	}
 
-	if err := jsoniter.NewDecoder(res.Body).Decode(&b.resp); err != nil {
-		return nil, err
+	resp := BulkIndexerResponseStat{}
+
+	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return BulkIndexerResponseStat{}, err
 	}
 
-	return b.resp, nil
+	return resp, nil
 }
 
 type errorTooManyRequests struct {
