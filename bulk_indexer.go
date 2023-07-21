@@ -94,9 +94,13 @@ func init() {
 										item.Error.Type = i.ReadString()
 									case "reason":
 										item.Error.Reason = i.ReadString()
+									default:
+										i.Skip()
 									}
 									return true
 								})
+							default:
+								i.Skip()
 							}
 							return true
 						})
@@ -111,6 +115,7 @@ func init() {
 				// no need to proceed further, return early
 				return false
 			default:
+				i.Skip()
 				return true
 			}
 		})
