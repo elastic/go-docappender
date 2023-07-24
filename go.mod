@@ -4,8 +4,8 @@ go 1.19
 
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.8.2
+	github.com/json-iterator/go v1.1.12
 	github.com/stretchr/testify v1.8.4
-	github.com/tidwall/gjson v1.14.4
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.3
 	go.elastic.co/apm/module/apmzap/v2 v2.4.3
 	go.elastic.co/apm/v2 v2.4.3
@@ -27,11 +27,11 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
 	go.elastic.co/apm/module/apmhttp/v2 v2.4.3 // indirect
 	go.opentelemetry.io/otel/sdk v1.16.0 // indirect
 	go.opentelemetry.io/otel/trace v1.16.0 // indirect
