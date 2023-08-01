@@ -72,7 +72,23 @@ func TestAppender(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.DeltaTemporality
+		},
+	))
+
+	indexerAttrs := []attribute.KeyValue{
+		attribute.String("a", "b"), attribute.String("c", "d"),
+	}
+
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval:    time.Minute,
+		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+		MetricAttributes: indexerAttrs,
+	})
+
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
@@ -117,6 +133,45 @@ loop:
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
 	}, stats)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	var asserted int
+	assertCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+		asserted++
+		// assert.Equal(t, "s", metric.Unit)
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			assert.Equal(t, count, dp.Value)
+			assert.Equal(t, attrs, dp.Attributes)
+		}
+	}
+	wantAttrs := attribute.NewSet(indexerAttrs...)
+	for _, metric := range rm.ScopeMetrics[0].Metrics {
+		switch metric.Name {
+		case docappender.METRIC_NAME_DOCS_ADDED:
+			assertCounter(metric, stats.Added, wantAttrs)
+		case docappender.METRIC_NAME_DOCS_ACTIVE:
+			assertCounter(metric, stats.Active, wantAttrs)
+		case docappender.METRIC_NAME_BULK_REQUESTS:
+			assertCounter(metric, stats.BulkRequests, wantAttrs)
+		case docappender.METRIC_NAME_DOCS_FAILED:
+			assertCounter(metric, stats.Failed, wantAttrs)
+		case docappender.METRIC_NAME_DOCS_FAILED_CLIENT:
+			assertCounter(metric, stats.FailedClient, wantAttrs)
+		case docappender.METRIC_NAME_DOCS_FAILED_SERVER:
+			assertCounter(metric, stats.FailedServer, wantAttrs)
+		case docappender.METRIC_NAME_DOCS_INDEXED:
+			assertCounter(metric, stats.Indexed, wantAttrs)
+		case docappender.METRIC_NAME_TOO_MANY_REQ:
+			assertCounter(metric, stats.TooManyRequests, wantAttrs)
+		case docappender.METRIC_NAME_AVAILABLE_BULK_REQ:
+			assertCounter(metric, stats.AvailableBulkRequests, wantAttrs)
+		case docappender.METRIC_NAME_BYTES_TOTAL:
+			assertCounter(metric, stats.BytesTotal, wantAttrs)
+		}
+	}
+	assert.Equal(t, 10, asserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {

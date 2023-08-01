@@ -137,14 +137,14 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		cfg.Logger = zap.NewNop()
 	}
 	indexer := &Appender{
-		availableBulkRequests: int64(len(available)),
-		config:                cfg,
-		available:             available,
-		closed:                make(chan struct{}),
-		bulkItems:             make(chan bulkIndexerItem, cfg.DocumentBufferSize),
-		metrics:               ms,
-		telemetryAttrs:        attribute.NewSet(cfg.MetricAttributes...),
+		config:         cfg,
+		available:      available,
+		closed:         make(chan struct{}),
+		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		metrics:        ms,
+		telemetryAttrs: attribute.NewSet(cfg.MetricAttributes...),
 	}
+	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
