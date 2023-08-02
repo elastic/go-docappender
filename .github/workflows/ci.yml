@@ -12,7 +12,7 @@ jobs:
     - uses: actions/setup-go@v4
       with:
         go-version-file: go.mod
-        cache: true
+        cache: false
     - run: make update-licenses
     - run: go run golang.org/x/tools/cmd/goimports@v0.3.0 -w .
     - run: go mod tidy -v
