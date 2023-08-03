@@ -145,6 +145,8 @@ loop:
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
+	// check the set of names and then check the counter or histogram
+	unexpectedMetrics := []string{}
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
 		switch metric.Name {
 		case "elasticsearch.events.count":
@@ -167,9 +169,17 @@ loop:
 			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
 			assertCounter(metric, stats.BytesTotal, indexerAttrs)
+		case "elasticsearch.buffer.latency":
+			// expect this metric name but no assertions done
+			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.flushed.latency":
+			// expect this metric name but no assertions done
+			// as it's histogram and it's checked elsewhere
+		default:
+			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
 		}
 	}
-	assert.Equal(t, make([]string, 0), unexpectedMetrics)
+	assert.Equal(t, []string{}, unexpectedMetrics)
 	assert.Equal(t, 10, asserted)
 }
 

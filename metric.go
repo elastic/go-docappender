@@ -18,7 +18,6 @@
 package docappender
 
 import (
-	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel"
@@ -43,154 +42,153 @@ type metrics struct {
 	activeDestroyed       metric.Int64Counter
 }
 
-const (
-	metricBufferDuration   = "elasticsearch.buffer.latency"
-	metricFlushDuration    = "elasticsearch.flushed.latency"
-	metricBulkRequests     = "elasticsearch.bulk_requests.count"
-	metricDocsAdded        = "elasticsearch.events.count"
-	metricDocsActive       = "elasticsearch.events.queued"
-	metricDocsFailed       = "elasticsearch.failed.count"
-	metricDocsFailedClient = "elasticsearch.failed.client.count"
-	metricDocsFailedServer = "elasticsearch.failed.server.count"
-	metricDocsIndexed      = "elasticsearch.events.processed"
-	metricTooManyReq       = "elasticsearch.failed.too_many_reqs"
-	metricBytesTotal       = "elasticsearch.flushed.bytes"
-	metricAvailableBulkReq = "elasticsearch.bulk_requests.available"
-	metricActiveCreated    = "elasticsearch.indexer.created"
-	metricActiveDestroyed  = "elasticsearch.indexer.destroyed"
-)
+type histogramMetric struct {
+	name        string
+	description string
+	unit        string
+	p           *metric.Float64Histogram
+}
+
+type counterMetric struct {
+	name        string
+	description string
+	unit        string
+	p           *metric.Int64Counter
+}
 
 func newMetrics(cfg Config) (metrics, error) {
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = otel.GetMeterProvider()
 	}
 	meter := cfg.MeterProvider.Meter("github.com/elastic/go-docappender")
-
-	var errs []error
-	ms := metrics{
-		bufferDuration: newFloat64Histogram(
-			meter,
-			metricBufferDuration,
-			"The amount of time a document was buffered for, in seconds.",
-			"s",
-			&errs,
-		),
-		flushDuration: newFloat64Histogram(
-			meter,
-			metricFlushDuration,
-			"The amount of time a _bulk request took, in seconds.",
-			"s",
-			&errs,
-		),
-		bulkRequests: newInt64Counter(
-			meter,
-			metricBulkRequests,
-			"The number of bulk requests completed.",
-			"1",
-			&errs),
-		docsAdded: newInt64Counter(
-			meter,
-			metricDocsAdded,
-			"the total number of items added to the indexer.",
-			"1",
-			&errs),
-		docsActive: newInt64Counter(
-			meter,
-			metricDocsActive,
-			"the number of active items waiting in the indexer's queue.",
-			"1",
-			&errs),
-		docsFailed: newInt64Counter(
-			meter,
-			metricDocsFailed,
-			"The number of indexing operations that failed",
-			"1",
-			&errs),
-		docsFailedClient: newInt64Counter(
-			meter,
-			metricDocsFailedClient,
-			"The number of docs failed to get indexed with client error(status_code >= 400 < 500, but not 429).",
-			"1",
-			&errs),
-		docsFailedServer: newInt64Counter(
-			meter,
-			metricDocsFailedServer,
-			"The number of docs failed to get indexed with server error(status_code >= 500).",
-			"1",
-			&errs),
-		docsIndexed: newInt64Counter(
-			meter,
-			metricDocsIndexed,
-			"The number of docs indexed successfully.",
-			"1",
-			&errs),
-		tooManyRequests: newInt64Counter(
-			meter,
-			metricTooManyReq,
-			"The number of 429 errors returned from the bulk indexer due to too many requests.",
-			"1",
-			&errs),
-		bytesTotal: newInt64Counter(
-			meter,
-			metricBytesTotal,
-			"The total number of bytes written to the request body",
-			"by",
-			&errs),
-		availableBulkRequests: newInt64Counter(
-			meter,
-			metricAvailableBulkReq,
-			"The number of bulk indexers available for making bulk index requests.",
-			"1",
-			&errs),
-		activeCreated: newInt64Counter(
-			meter,
-			metricActiveCreated,
-			"The number of active indexer creations.",
-			"1",
-			&errs),
-		activeDestroyed: newInt64Counter(
-			meter,
-			metricActiveDestroyed,
-			"The number of times an active indexer was destroyed.",
-			"1",
-			&errs),
+	ms := metrics{}
+	histograms := []histogramMetric{
+		{
+			name:        "elasticsearch.buffer.latency",
+			description: "The amount of time a document was buffered for, in seconds.",
+			unit:        "s",
+			p:           &ms.bufferDuration,
+		},
+		{
+			name:        "elasticsearch.flushed.latency",
+			description: "The amount of time a _bulk request took, in seconds.",
+			unit:        "s",
+			p:           &ms.flushDuration,
+		},
 	}
 
-	if len(errs) > 0 {
-		return ms, fmt.Errorf(
-			"failed creating metrics: %w", errors.Join(errs...),
-		)
+	for _, m := range histograms {
+		err := newFloat64Histogram(meter, m)
+		if err != nil {
+			return ms, err
+		}
+	}
+
+	counters := []counterMetric{
+		{
+			name:        "elasticsearch.bulk_requests.count",
+			description: "The number of bulk requests completed.",
+			p:           &ms.bulkRequests,
+		},
+		{
+			name:        "elasticsearch.events.count",
+			description: "the total number of items added to the indexer.",
+			p:           &ms.docsAdded,
+		},
+		{
+			name:        "elasticsearch.events.queued",
+			description: "the number of active items waiting in the indexer's queue.",
+			p:           &ms.docsActive,
+		},
+		{
+			name:        "elasticsearch.failed.count",
+			description: "The amount of time a document was buffered for, in seconds.",
+			p:           &ms.docsFailed,
+		},
+		{
+			name:        "elasticsearch.failed.client.count",
+			description: "The number of docs failed to get indexed with client error(status_code >= 400 < 500, but not 429).",
+			p:           &ms.docsFailedClient,
+		},
+		{
+			name:        "elasticsearch.failed.server.count",
+			description: "The number of docs failed to get indexed with server error(status_code >= 500).",
+			p:           &ms.docsFailedServer,
+		},
+		{
+			name:        "elasticsearch.events.processed",
+			description: "The number of docs indexed successfully.",
+			p:           &ms.docsIndexed,
+		},
+		{
+			name:        "elasticsearch.failed.too_many_reqs",
+			description: "The number of 429 errors returned from the bulk indexer due to too many requests.",
+			p:           &ms.tooManyRequests,
+		},
+		{
+			name:        "elasticsearch.flushed.bytes",
+			description: "The total number of bytes written to the request body",
+			unit:        "by",
+			p:           &ms.bytesTotal,
+		},
+		{
+			name:        "elasticsearch.bulk_requests.available",
+			description: "The number of bulk indexers available for making bulk index requests.",
+			p:           &ms.availableBulkRequests,
+		},
+		{
+			name:        "elasticsearch.indexer.created",
+			description: "The number of active indexer creations.",
+			p:           &ms.activeCreated,
+		},
+		{
+			name:        "elasticsearch.indexer.destroyed",
+			description: "The number of times an active indexer was destroyed.",
+			p:           &ms.activeDestroyed,
+		},
+	}
+	for _, m := range counters {
+		err := newInt64Counter(meter, m)
+		if err != nil {
+			return ms, err
+		}
 	}
 
 	return ms, nil
 }
 
-func newInt64Counter(meter metric.Meter, name string, description string, unit string, errs *[]error) metric.Int64Counter {
+func newInt64Counter(meter metric.Meter, c counterMetric) error {
+	unit := c.unit
+	if unit == "" {
+		unit = "1"
+	}
 	m, err := meter.Int64Counter(
-		name,
+		c.name,
 		metric.WithUnit(unit),
-		metric.WithDescription(description),
+		metric.WithDescription(c.description),
 	)
 
 	if err != nil {
-		*errs = append(*errs, fmt.Errorf(
-			"failed creating %s metric: %w", name, err,
-		))
+		return fmt.Errorf(
+			"failed creating %s metric: %w", c.name, err,
+		)
 	}
-	return m
+	*c.p = m
+	return nil
 }
 
-func newFloat64Histogram(meter metric.Meter, name string, description string, unit string, errors *[]error) metric.Float64Histogram {
+func newFloat64Histogram(meter metric.Meter, h histogramMetric) error {
 	m, err := meter.Float64Histogram(
-		name,
-		metric.WithUnit(unit),
-		metric.WithDescription(description),
+		h.name,
+		metric.WithUnit(h.unit),
+		metric.WithDescription(h.description),
 	)
 
 	if err != nil {
-		*errors = append(*errors, fmt.Errorf(
-			"failed creating %s metric: %w", name, err,
-		))
+		return fmt.Errorf(
+			"failed creating %s metric: %w", h.name, err,
+		)
 	}
-	return m
+	*h.p = m
+	return nil
 }
