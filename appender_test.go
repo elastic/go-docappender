@@ -72,7 +72,23 @@ func TestAppender(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.DeltaTemporality
+		},
+	))
+
+	indexerAttrs := attribute.NewSet(
+		attribute.String("a", "b"), attribute.String("c", "d"),
+	)
+
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval:    time.Minute,
+		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+		MetricAttributes: indexerAttrs,
+	})
+
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
@@ -117,6 +133,54 @@ loop:
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
 	}, stats)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	var asserted int
+	assertCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+		asserted++
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			assert.Equal(t, count, dp.Value)
+			assert.Equal(t, attrs, dp.Attributes)
+		}
+	}
+	// check the set of names and then check the counter or histogram
+	unexpectedMetrics := []string{}
+	for _, metric := range rm.ScopeMetrics[0].Metrics {
+		switch metric.Name {
+		case "elasticsearch.events.count":
+			assertCounter(metric, stats.Added, indexerAttrs)
+		case "elasticsearch.events.queued":
+			assertCounter(metric, stats.Active, indexerAttrs)
+		case "elasticsearch.bulk_requests.count":
+			assertCounter(metric, stats.BulkRequests, indexerAttrs)
+		case "elasticsearch.failed.count":
+			assertCounter(metric, stats.Failed, indexerAttrs)
+		case "elasticsearch.failed.client.count":
+			assertCounter(metric, stats.FailedClient, indexerAttrs)
+		case "elasticsearch.failed.server.count":
+			assertCounter(metric, stats.FailedServer, indexerAttrs)
+		case "elasticsearch.events.processed":
+			assertCounter(metric, stats.Indexed, indexerAttrs)
+		case "elasticsearch.failed.too_many_reqs":
+			assertCounter(metric, stats.TooManyRequests, indexerAttrs)
+		case "elasticsearch.bulk_requests.available":
+			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
+		case "elasticsearch.flushed.bytes":
+			assertCounter(metric, stats.BytesTotal, indexerAttrs)
+		case "elasticsearch.buffer.latency":
+			// expect this metric name but no assertions done
+			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.flushed.latency":
+			// expect this metric name but no assertions done
+			// as it's histogram and it's checked elsewhere
+		default:
+			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
+		}
+	}
+	assert.Empty(t, unexpectedMetrics)
+	assert.Equal(t, 10, asserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
@@ -279,9 +343,9 @@ func TestAppenderFlushMetric(t *testing.T) {
 		},
 	))
 
-	indexerAttrs := []attribute.KeyValue{
+	indexerAttrs := attribute.NewSet(
 		attribute.String("a", "b"), attribute.String("c", "d"),
-	}
+	)
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushBytes:       1,
 		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
@@ -332,13 +396,12 @@ func TestAppenderFlushMetric(t *testing.T) {
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
-	wantAttrs := attribute.NewSet(indexerAttrs...)
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
 		switch metric.Name {
 		case "elasticsearch.buffer.latency":
-			assertHistogram(metric, docs, false, wantAttrs)
+			assertHistogram(metric, docs, false, indexerAttrs)
 		case "elasticsearch.flushed.latency":
-			assertHistogram(metric, 2, true, wantAttrs)
+			assertHistogram(metric, 2, true, indexerAttrs)
 		}
 	}
 	assert.Equal(t, 2, asserted)

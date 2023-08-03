@@ -32,7 +32,6 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
@@ -60,6 +59,7 @@ var (
 // Up to `config.MaxRequests` bulk requests may be flushing/active concurrently, to allow the
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
+	// legacy metrics for Stats()
 	bulkRequests          int64
 	docsAdded             int64
 	docsActive            int64
@@ -81,12 +81,10 @@ type Appender struct {
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
-	bufferDuration        metric.Float64Histogram
-	flushDuration         metric.Float64Histogram
 	telemetryAttrs        attribute.Set
-
-	mu     sync.Mutex
-	closed chan struct{}
+	metrics               metrics
+	mu                    sync.Mutex
+	closed                chan struct{}
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
@@ -126,31 +124,10 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 			cfg.Scaling.IdleInterval = 30 * time.Second
 		}
 	}
-	if cfg.MeterProvider == nil {
-		cfg.MeterProvider = otel.GetMeterProvider()
-	}
-	meter := cfg.MeterProvider.Meter("github.com/elastic/go-docappender")
-	bufDuration, err := meter.Float64Histogram("elasticsearch.buffer.latency",
-		metric.WithUnit("s"),
-		metric.WithDescription(
-			"The amount of time a document was buffered for, in seconds.",
-		),
-	)
+
+	ms, err := newMetrics(cfg)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"failed creating elasticsearch.buffer.latency metric: %w", err,
-		)
-	}
-	flushDuration, err := meter.Float64Histogram("elasticsearch.flushed.latency",
-		metric.WithUnit("s"),
-		metric.WithDescription(
-			"The amount of time a _bulk request took, in seconds.",
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed creating elasticsearch.flushed.latency metric: %w", err,
-		)
+		return nil, err
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
@@ -160,15 +137,14 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		cfg.Logger = zap.NewNop()
 	}
 	indexer := &Appender{
-		availableBulkRequests: int64(len(available)),
-		config:                cfg,
-		available:             available,
-		closed:                make(chan struct{}),
-		bulkItems:             make(chan bulkIndexerItem, cfg.DocumentBufferSize),
-		bufferDuration:        bufDuration,
-		flushDuration:         flushDuration,
-		telemetryAttrs:        attribute.NewSet(cfg.MetricAttributes...),
+		config:         cfg,
+		available:      available,
+		closed:         make(chan struct{}),
+		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		metrics:        ms,
+		telemetryAttrs: cfg.MetricAttributes,
 	}
+	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
@@ -259,9 +235,17 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	atomic.AddInt64(&a.docsAdded, 1)
-	atomic.AddInt64(&a.docsActive, 1)
+	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
+	a.addCount(1, &a.docsActive, a.metrics.docsActive)
 	return nil
+}
+
+func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter) {
+	// legacy metric
+	atomic.AddInt64(lm, delta)
+
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	m.Add(context.Background(), delta, attrs)
 }
 
 func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
@@ -269,8 +253,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	if n == 0 {
 		return nil
 	}
-	defer atomic.AddInt64(&a.docsActive, -int64(n))
-	defer atomic.AddInt64(&a.bulkRequests, 1)
+	defer a.addCount(-int64(n), &a.docsActive, a.metrics.docsActive)
+	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
 	if a.tracingEnabled() {
@@ -288,10 +272,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	// Record the bulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
-		atomic.AddInt64(&a.bytesTotal, int64(flushed))
+		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
 	}
 	if err != nil {
-		atomic.AddInt64(&a.docsFailed, int64(n))
+		a.addCount(int64(n), &a.docsFailed, a.metrics.docsFailed)
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
@@ -300,7 +284,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		var errTooMany errorTooManyRequests
 		// 429 may be returned as errors from the bulk indexer.
 		if errors.As(err, &errTooMany) {
-			atomic.AddInt64(&a.tooManyRequests, int64(n))
+			a.addCount(int64(n), &a.tooManyRequests, a.metrics.tooManyRequests)
 		}
 		return err
 	}
@@ -335,19 +319,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		}
 	}
 	if docsFailed > 0 {
-		atomic.AddInt64(&a.docsFailed, docsFailed)
+		a.addCount(docsFailed, &a.docsFailed, a.metrics.docsFailed)
 	}
 	if docsIndexed > 0 {
-		atomic.AddInt64(&a.docsIndexed, docsIndexed)
+		a.addCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed)
 	}
 	if tooManyRequests > 0 {
-		atomic.AddInt64(&a.tooManyRequests, tooManyRequests)
+		a.addCount(tooManyRequests, &a.tooManyRequests, a.metrics.tooManyRequests)
 	}
 	if clientFailed > 0 {
-		atomic.AddInt64(&a.docsFailedClient, clientFailed)
+		a.addCount(clientFailed, &a.docsFailedClient, a.metrics.docsFailedClient)
 	}
 	if serverFailed > 0 {
-		atomic.AddInt64(&a.docsFailedServer, serverFailed)
+		a.addCount(serverFailed, &a.docsFailedServer, a.metrics.docsFailedServer)
 	}
 	logger.Debug(
 		"bulk request completed",
@@ -379,7 +363,7 @@ func (a *Appender) runActiveIndexer() {
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
 			active = <-a.available
-			atomic.AddInt64(&a.availableBulkRequests, -1)
+			a.addCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.add(item); err != nil {
@@ -442,13 +426,13 @@ func (a *Appender) runActiveIndexer() {
 				})
 				indexer.Reset()
 				a.available <- indexer
-				atomic.AddInt64(&a.availableBulkRequests, 1)
-				a.flushDuration.Record(context.Background(), took.Seconds(),
+				a.addCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)
 				return err
 			})
-			a.bufferDuration.Record(context.Background(),
+			a.metrics.bufferDuration.Record(context.Background(),
 				time.Since(firstDocTS).Seconds(), attrs,
 			)
 		}
@@ -458,11 +442,11 @@ func (a *Appender) runActiveIndexer() {
 		now := time.Now()
 		info := a.scalingInformation()
 		if a.maybeScaleDown(now, info, &timedFlush) {
-			atomic.AddInt64(&a.activeDestroyed, 1)
+			a.addCount(1, &a.activeDestroyed, a.metrics.activeDestroyed)
 			return
 		}
 		if a.maybeScaleUp(now, info, &fullFlush) {
-			atomic.AddInt64(&a.activeCreated, 1)
+			a.addCount(1, &a.activeCreated, a.metrics.activeCreated)
 			a.errgroup.Go(func() error {
 				a.runActiveIndexer()
 				return nil
