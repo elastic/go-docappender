@@ -86,7 +86,7 @@ type Config struct {
 
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
-	MetricAttributes []attribute.KeyValue
+	MetricAttributes attribute.Set
 }
 
 // ScalingConfig holds the docappender autoscaling configuration.

@@ -79,9 +79,9 @@ func TestAppender(t *testing.T) {
 		},
 	))
 
-	indexerAttrs := []attribute.KeyValue{
+	indexerAttrs := attribute.NewSet(
 		attribute.String("a", "b"), attribute.String("c", "d"),
-	}
+	)
 
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushInterval:    time.Minute,
@@ -139,38 +139,37 @@ loop:
 	var asserted int
 	assertCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
 		asserted++
-		// assert.Equal(t, "s", metric.Unit)
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
 			assert.Equal(t, count, dp.Value)
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
-	wantAttrs := attribute.NewSet(indexerAttrs...)
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
 		switch metric.Name {
-		case docappender.METRIC_NAME_DOCS_ADDED:
-			assertCounter(metric, stats.Added, wantAttrs)
-		case docappender.METRIC_NAME_DOCS_ACTIVE:
-			assertCounter(metric, stats.Active, wantAttrs)
-		case docappender.METRIC_NAME_BULK_REQUESTS:
-			assertCounter(metric, stats.BulkRequests, wantAttrs)
-		case docappender.METRIC_NAME_DOCS_FAILED:
-			assertCounter(metric, stats.Failed, wantAttrs)
-		case docappender.METRIC_NAME_DOCS_FAILED_CLIENT:
-			assertCounter(metric, stats.FailedClient, wantAttrs)
-		case docappender.METRIC_NAME_DOCS_FAILED_SERVER:
-			assertCounter(metric, stats.FailedServer, wantAttrs)
-		case docappender.METRIC_NAME_DOCS_INDEXED:
-			assertCounter(metric, stats.Indexed, wantAttrs)
-		case docappender.METRIC_NAME_TOO_MANY_REQ:
-			assertCounter(metric, stats.TooManyRequests, wantAttrs)
-		case docappender.METRIC_NAME_AVAILABLE_BULK_REQ:
-			assertCounter(metric, stats.AvailableBulkRequests, wantAttrs)
-		case docappender.METRIC_NAME_BYTES_TOTAL:
-			assertCounter(metric, stats.BytesTotal, wantAttrs)
+		case "elasticsearch.events.count":
+			assertCounter(metric, stats.Added, indexerAttrs)
+		case "elasticsearch.events.queued":
+			assertCounter(metric, stats.Active, indexerAttrs)
+		case "elasticsearch.bulk_requests.count":
+			assertCounter(metric, stats.BulkRequests, indexerAttrs)
+		case "elasticsearch.failed.count":
+			assertCounter(metric, stats.Failed, indexerAttrs)
+		case "elasticsearch.failed.client.count":
+			assertCounter(metric, stats.FailedClient, indexerAttrs)
+		case "elasticsearch.failed.server.count":
+			assertCounter(metric, stats.FailedServer, indexerAttrs)
+		case "elasticsearch.events.processed":
+			assertCounter(metric, stats.Indexed, indexerAttrs)
+		case "elasticsearch.failed.too_many_reqs":
+			assertCounter(metric, stats.TooManyRequests, indexerAttrs)
+		case "elasticsearch.bulk_requests.available":
+			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
+		case "elasticsearch.flushed.bytes":
+			assertCounter(metric, stats.BytesTotal, indexerAttrs)
 		}
 	}
+	assert.Equal(t, make([]string, 0), unexpectedMetrics)
 	assert.Equal(t, 10, asserted)
 }
 
@@ -334,9 +333,9 @@ func TestAppenderFlushMetric(t *testing.T) {
 		},
 	))
 
-	indexerAttrs := []attribute.KeyValue{
+	indexerAttrs := attribute.NewSet(
 		attribute.String("a", "b"), attribute.String("c", "d"),
-	}
+	)
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushBytes:       1,
 		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
@@ -387,13 +386,12 @@ func TestAppenderFlushMetric(t *testing.T) {
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
-	wantAttrs := attribute.NewSet(indexerAttrs...)
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
 		switch metric.Name {
 		case "elasticsearch.buffer.latency":
-			assertHistogram(metric, docs, false, wantAttrs)
+			assertHistogram(metric, docs, false, indexerAttrs)
 		case "elasticsearch.flushed.latency":
-			assertHistogram(metric, 2, true, wantAttrs)
+			assertHistogram(metric, 2, true, indexerAttrs)
 		}
 	}
 	assert.Equal(t, 2, asserted)

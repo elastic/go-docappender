@@ -82,7 +82,7 @@ type Appender struct {
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
 	telemetryAttrs        attribute.Set
-	metrics               Metrics
+	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
 }
@@ -142,7 +142,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		closed:         make(chan struct{}),
 		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:        ms,
-		telemetryAttrs: attribute.NewSet(cfg.MetricAttributes...),
+		telemetryAttrs: cfg.MetricAttributes,
 	}
 	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
@@ -244,7 +244,7 @@ func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter) {
 	// legacy metric
 	atomic.AddInt64(lm, delta)
 
-	attrs := metric.WithAttributes(a.config.MetricAttributes...)
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
 	m.Add(context.Background(), delta, attrs)
 }
 
