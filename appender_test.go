@@ -179,7 +179,7 @@ loop:
 			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
 		}
 	}
-	assert.Equal(t, []string{}, unexpectedMetrics)
+	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, 10, asserted)
 }
 
