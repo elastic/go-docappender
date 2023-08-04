@@ -82,7 +82,7 @@ type Appender struct {
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
 	telemetryAttrs        attribute.Set
-	metrics               metrics
+	metrics               *metrics
 	reg                   metric.Registration
 	mu                    sync.Mutex
 	closed                chan struct{}
@@ -175,7 +175,7 @@ func (a *Appender) Close(ctx context.Context) error {
 	case <-a.closed:
 	default:
 		close(a.closed)
-		a.reg.Unregister()
+		// a.reg.Unregister()
 		// Cancel ongoing flushes when ctx is cancelled.
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()

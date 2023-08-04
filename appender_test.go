@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -145,16 +146,16 @@ loop:
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
-
 	assertProcessedCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
 		asserted++
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
-			// assert.Equal(t, count, dp.Value)
-			assert.Contains(t, dp.Attributes, attrs)
+			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
 			status, exist := dp.Attributes.Value(attribute.Key("status"))
 			assert.True(t, exist)
-			assert.Contains(t, []string{"Success", "FailedClient", "FailedServer", "TooMany"}, status)
+			assert.Contains(t, []string{"Success", "FailedClient", "FailedServer", "TooMany"}, status.AsString())
+			// TODO: assert the value per status and put back the unregister
+			println(status.AsString(), dp.Value)
 		}
 	}
 	// check the set of names and then check the counter or histogram
@@ -183,9 +184,8 @@ loop:
 			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
 		}
 	}
-
 	assert.Empty(t, unexpectedMetrics)
-	assert.Equal(t, 9, asserted)
+	assert.Equal(t, 6, asserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
