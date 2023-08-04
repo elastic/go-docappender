@@ -18,28 +18,31 @@
 package docappender
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
 type metrics struct {
-	bufferDuration metric.Float64Histogram
-	flushDuration  metric.Float64Histogram
-
+	bufferDuration        metric.Float64Histogram
+	flushDuration         metric.Float64Histogram
 	bulkRequests          metric.Int64Counter
 	docsAdded             metric.Int64Counter
 	docsActive            metric.Int64Counter
-	docsFailed            metric.Int64Counter
-	docsFailedClient      metric.Int64Counter
-	docsFailedServer      metric.Int64Counter
-	docsIndexed           metric.Int64Counter
-	tooManyRequests       metric.Int64Counter
 	bytesTotal            metric.Int64Counter
 	availableBulkRequests metric.Int64Counter
 	activeCreated         metric.Int64Counter
 	activeDestroyed       metric.Int64Counter
+
+	// attributes for docsProcessed metric
+	docsIndexed      int64
+	docsFailedClient int64
+	docsFailedServer int64
+	tooManyRequests  int64
 }
 
 type histogramMetric struct {
@@ -56,7 +59,7 @@ type counterMetric struct {
 	p           *metric.Int64Counter
 }
 
-func newMetrics(cfg Config) (metrics, error) {
+func newMetrics(cfg Config) (metrics, metric.Registration, error) {
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = otel.GetMeterProvider()
 	}
@@ -80,7 +83,7 @@ func newMetrics(cfg Config) (metrics, error) {
 	for _, m := range histograms {
 		err := newFloat64Histogram(meter, m)
 		if err != nil {
-			return ms, err
+			return ms, nil, err
 		}
 	}
 
@@ -92,38 +95,13 @@ func newMetrics(cfg Config) (metrics, error) {
 		},
 		{
 			name:        "elasticsearch.events.count",
-			description: "the total number of items added to the indexer.",
+			description: "Number of APM Events received for indexing",
 			p:           &ms.docsAdded,
 		},
 		{
 			name:        "elasticsearch.events.queued",
 			description: "the number of active items waiting in the indexer's queue.",
 			p:           &ms.docsActive,
-		},
-		{
-			name:        "elasticsearch.failed.count",
-			description: "The amount of time a document was buffered for, in seconds.",
-			p:           &ms.docsFailed,
-		},
-		{
-			name:        "elasticsearch.failed.client.count",
-			description: "The number of docs failed to get indexed with client error(status_code >= 400 < 500, but not 429).",
-			p:           &ms.docsFailedClient,
-		},
-		{
-			name:        "elasticsearch.failed.server.count",
-			description: "The number of docs failed to get indexed with server error(status_code >= 500).",
-			p:           &ms.docsFailedServer,
-		},
-		{
-			name:        "elasticsearch.events.processed",
-			description: "The number of docs indexed successfully.",
-			p:           &ms.docsIndexed,
-		},
-		{
-			name:        "elasticsearch.failed.too_many_reqs",
-			description: "The number of 429 errors returned from the bulk indexer due to too many requests.",
-			p:           &ms.tooManyRequests,
 		},
 		{
 			name:        "elasticsearch.flushed.bytes",
@@ -150,11 +128,51 @@ func newMetrics(cfg Config) (metrics, error) {
 	for _, m := range counters {
 		err := newInt64Counter(meter, m)
 		if err != nil {
-			return ms, err
+			return ms, nil, err
 		}
 	}
 
-	return ms, nil
+	elasticsearchEventsProcessed, err := meter.Int64ObservableCounter(
+		"elasticsearch.events.processed",
+		metric.WithUnit("1"),
+		metric.WithDescription("Number of APM Events flushed to Elasticsearch. Dimensions are used to report the project ID, success or failures"),
+	)
+	if err != nil {
+		return ms, nil, fmt.Errorf("elasticsearch: failed to create metric for elasticsearch processed events: %w", err)
+	}
+
+	reg, err := meter.RegisterCallback(func(_ context.Context, obs metric.Observer) error {
+		pattrs := metric.WithAttributeSet(cfg.MetricAttributes)
+		obs.ObserveInt64(elasticsearchEventsProcessed, atomic.LoadInt64(&ms.docsIndexed),
+			pattrs,
+			metric.WithAttributes(
+				attribute.String("status", "Success"), // Create action.
+			))
+		obs.ObserveInt64(elasticsearchEventsProcessed, atomic.LoadInt64(&ms.docsFailedClient),
+			pattrs, metric.WithAttributes(
+				attribute.String("status", "FailedClient"), // Failed
+			))
+		obs.ObserveInt64(elasticsearchEventsProcessed, atomic.LoadInt64(&ms.docsFailedServer),
+			pattrs,
+			metric.WithAttributes(
+				attribute.String("status", "FailedServer"), // Failed
+			))
+		obs.ObserveInt64(elasticsearchEventsProcessed, atomic.LoadInt64(&ms.tooManyRequests),
+			pattrs,
+			metric.WithAttributes(
+				attribute.String("status", "TooMany"), // TooMany
+			))
+		return nil
+	},
+		elasticsearchEventsProcessed,
+	)
+
+	if err != nil {
+		return ms, nil, fmt.Errorf("elasticsearch: failed to register metric callback: %w", err)
+	}
+	fmt.Println("successfully registered callback")
+
+	return ms, reg, nil
 }
 
 func newInt64Counter(meter metric.Meter, c counterMetric) error {

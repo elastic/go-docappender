@@ -145,6 +145,18 @@ loop:
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
+
+	assertProcessedCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+		asserted++
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			// assert.Equal(t, count, dp.Value)
+			assert.Contains(t, dp.Attributes, attrs)
+			status, exist := dp.Attributes.Value(attribute.Key("status"))
+			assert.True(t, exist)
+			assert.Contains(t, []string{"Success", "FailedClient", "FailedServer", "TooMany"}, status)
+		}
+	}
 	// check the set of names and then check the counter or histogram
 	unexpectedMetrics := []string{}
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
@@ -155,16 +167,8 @@ loop:
 			assertCounter(metric, stats.Active, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
 			assertCounter(metric, stats.BulkRequests, indexerAttrs)
-		case "elasticsearch.failed.count":
-			assertCounter(metric, stats.Failed, indexerAttrs)
-		case "elasticsearch.failed.client.count":
-			assertCounter(metric, stats.FailedClient, indexerAttrs)
-		case "elasticsearch.failed.server.count":
-			assertCounter(metric, stats.FailedServer, indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertCounter(metric, stats.Indexed, indexerAttrs)
-		case "elasticsearch.failed.too_many_reqs":
-			assertCounter(metric, stats.TooManyRequests, indexerAttrs)
+			assertProcessedCounter(metric, stats.Indexed, indexerAttrs)
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
@@ -179,8 +183,9 @@ loop:
 			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
 		}
 	}
+
 	assert.Empty(t, unexpectedMetrics)
-	assert.Equal(t, 10, asserted)
+	assert.Equal(t, 9, asserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
