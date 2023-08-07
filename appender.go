@@ -82,10 +82,20 @@ type Appender struct {
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
 	telemetryAttrs        attribute.Set
+	processedEventAttrSet map[ProcessedStatus]attribute.Set
 	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
 }
+
+type ProcessedStatus string
+
+const (
+	Success      ProcessedStatus = "Success"
+	FailedClient ProcessedStatus = "FailedClient"
+	FailedServer ProcessedStatus = "FailedServer"
+	TooMany      ProcessedStatus = "TooMany"
+)
 
 // New returns a new Appender that indexes documents into Elasticsearch.
 func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
@@ -125,6 +135,12 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		}
 	}
 
+	processedEventAttrSet := map[ProcessedStatus]attribute.Set{
+		Success:      attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "Success"))...),
+		FailedClient: attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "FailedClient"))...),
+		FailedServer: attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "FailedServer"))...),
+		TooMany:      attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "TooMany"))...),
+	}
 	ms, err := newMetrics(cfg)
 	if err != nil {
 		return nil, err
@@ -137,12 +153,13 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		cfg.Logger = zap.NewNop()
 	}
 	indexer := &Appender{
-		config:         cfg,
-		available:      available,
-		closed:         make(chan struct{}),
-		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
-		metrics:        ms,
-		telemetryAttrs: cfg.MetricAttributes,
+		config:                cfg,
+		available:             available,
+		closed:                make(chan struct{}),
+		bulkItems:             make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		metrics:               *ms,
+		telemetryAttrs:        cfg.MetricAttributes,
+		processedEventAttrSet: processedEventAttrSet,
 	}
 	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
@@ -235,9 +252,23 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
+	a.addProcessedCount(1, &a.docsAdded, a.metrics.docsAdded, Success)
 	a.addCount(1, &a.docsActive, a.metrics.docsActive)
 	return nil
+}
+
+func (a *Appender) addProcessedCount(delta int64, lm *int64, m metric.Int64Counter, status ProcessedStatus) {
+	// legacy metric
+	atomic.AddInt64(lm, delta)
+
+	attr, exist := a.processedEventAttrSet[status]
+	if !exist {
+		// warning
+		fmt.Println("UNKNOwN STATUS", attr)
+		return
+	}
+
+	m.Add(context.Background(), delta, metric.WithAttributeSet(attr))
 }
 
 func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter) {
@@ -275,7 +306,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
 	}
 	if err != nil {
-		a.addCount(int64(n), &a.docsFailed, a.metrics.docsFailed)
+		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
@@ -284,7 +315,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		var errTooMany errorTooManyRequests
 		// 429 may be returned as errors from the bulk indexer.
 		if errors.As(err, &errTooMany) {
-			a.addCount(int64(n), &a.tooManyRequests, a.metrics.tooManyRequests)
+			a.addProcessedCount(int64(n), &a.tooManyRequests, a.metrics.docsIndexed, TooMany)
 		}
 		return err
 	}
@@ -319,19 +350,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		}
 	}
 	if docsFailed > 0 {
-		a.addCount(docsFailed, &a.docsFailed, a.metrics.docsFailed)
+		atomic.AddInt64(&a.docsFailed, int64(n))
 	}
 	if docsIndexed > 0 {
-		a.addCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed)
+		a.addProcessedCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed, Success)
 	}
 	if tooManyRequests > 0 {
-		a.addCount(tooManyRequests, &a.tooManyRequests, a.metrics.tooManyRequests)
+		a.addProcessedCount(tooManyRequests, &a.tooManyRequests, a.metrics.docsIndexed, TooMany)
 	}
 	if clientFailed > 0 {
-		a.addCount(clientFailed, &a.docsFailedClient, a.metrics.docsFailedClient)
+		a.addProcessedCount(clientFailed, &a.docsFailedClient, a.metrics.docsIndexed, FailedClient)
 	}
 	if serverFailed > 0 {
-		a.addCount(serverFailed, &a.docsFailedServer, a.metrics.docsFailedServer)
+		a.addProcessedCount(serverFailed, &a.docsFailedServer, a.metrics.docsIndexed, FailedServer)
 	}
 	logger.Debug(
 		"bulk request completed",

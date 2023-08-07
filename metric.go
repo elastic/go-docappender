@@ -32,10 +32,7 @@ type metrics struct {
 	docsAdded             metric.Int64Counter
 	docsActive            metric.Int64Counter
 	docsFailed            metric.Int64Counter
-	docsFailedClient      metric.Int64Counter
-	docsFailedServer      metric.Int64Counter
 	docsIndexed           metric.Int64Counter
-	tooManyRequests       metric.Int64Counter
 	bytesTotal            metric.Int64Counter
 	availableBulkRequests metric.Int64Counter
 	activeCreated         metric.Int64Counter
@@ -56,7 +53,7 @@ type counterMetric struct {
 	p           *metric.Int64Counter
 }
 
-func newMetrics(cfg Config) (metrics, error) {
+func newMetrics(cfg Config) (*metrics, error) {
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = otel.GetMeterProvider()
 	}
@@ -80,7 +77,7 @@ func newMetrics(cfg Config) (metrics, error) {
 	for _, m := range histograms {
 		err := newFloat64Histogram(meter, m)
 		if err != nil {
-			return ms, err
+			return &ms, err
 		}
 	}
 
@@ -92,7 +89,7 @@ func newMetrics(cfg Config) (metrics, error) {
 		},
 		{
 			name:        "elasticsearch.events.count",
-			description: "the total number of items added to the indexer.",
+			description: "Number of APM Events received for indexing",
 			p:           &ms.docsAdded,
 		},
 		{
@@ -101,29 +98,9 @@ func newMetrics(cfg Config) (metrics, error) {
 			p:           &ms.docsActive,
 		},
 		{
-			name:        "elasticsearch.failed.count",
-			description: "The amount of time a document was buffered for, in seconds.",
-			p:           &ms.docsFailed,
-		},
-		{
-			name:        "elasticsearch.failed.client.count",
-			description: "The number of docs failed to get indexed with client error(status_code >= 400 < 500, but not 429).",
-			p:           &ms.docsFailedClient,
-		},
-		{
-			name:        "elasticsearch.failed.server.count",
-			description: "The number of docs failed to get indexed with server error(status_code >= 500).",
-			p:           &ms.docsFailedServer,
-		},
-		{
 			name:        "elasticsearch.events.processed",
-			description: "The number of docs indexed successfully.",
+			description: "Number of APM Events flushed to Elasticsearch. Dimensions are used to report the project ID, success or failures",
 			p:           &ms.docsIndexed,
-		},
-		{
-			name:        "elasticsearch.failed.too_many_reqs",
-			description: "The number of 429 errors returned from the bulk indexer due to too many requests.",
-			p:           &ms.tooManyRequests,
 		},
 		{
 			name:        "elasticsearch.flushed.bytes",
@@ -150,11 +127,11 @@ func newMetrics(cfg Config) (metrics, error) {
 	for _, m := range counters {
 		err := newInt64Counter(meter, m)
 		if err != nil {
-			return ms, err
+			return &ms, err
 		}
 	}
 
-	return ms, nil
+	return &ms, nil
 }
 
 func newInt64Counter(meter metric.Meter, c counterMetric) error {
