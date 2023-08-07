@@ -83,7 +83,6 @@ type Appender struct {
 	cancelErrgroupContext context.CancelFunc
 	telemetryAttrs        attribute.Set
 	metrics               *metrics
-	reg                   metric.Registration
 	mu                    sync.Mutex
 	closed                chan struct{}
 }
@@ -126,7 +125,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		}
 	}
 
-	ms, reg, err := newMetrics(cfg)
+	ms, err := newMetrics(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +143,6 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		closed:         make(chan struct{}),
 		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:        ms,
-		reg:            reg,
 		telemetryAttrs: attribute.NewSet(cfg.MetricAttributes.ToSlice()...),
 	}
 	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
@@ -175,7 +173,6 @@ func (a *Appender) Close(ctx context.Context) error {
 	case <-a.closed:
 	default:
 		close(a.closed)
-		// a.reg.Unregister()
 		// Cancel ongoing flushes when ctx is cancelled.
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()

@@ -153,9 +153,18 @@ loop:
 			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
 			status, exist := dp.Attributes.Value(attribute.Key("status"))
 			assert.True(t, exist)
-			assert.Contains(t, []string{"Success", "FailedClient", "FailedServer", "TooMany"}, status.AsString())
-			// TODO: assert the value per status and put back the unregister
-			println(status.AsString(), dp.Value)
+			switch status.AsString() {
+			case "Success":
+				assert.Equal(t, stats.Indexed, dp.Value)
+			case "FailedClient":
+				assert.Equal(t, stats.FailedClient, dp.Value)
+			case "FailedServer":
+				assert.Equal(t, stats.FailedServer, dp.Value)
+			case "TooMany":
+				assert.Equal(t, stats.TooManyRequests, dp.Value)
+			default:
+				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+			}
 		}
 	}
 	// check the set of names and then check the counter or histogram
@@ -612,7 +621,6 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	defer cancel()
 	go func() {
 		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(p []byte) (int, error) {
-			fmt.Println("hello?")
 			close(readInvoked)
 			return copy(p, "{}"), nil
 		}))

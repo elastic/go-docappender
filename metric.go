@@ -59,7 +59,7 @@ type counterMetric struct {
 	p           *metric.Int64Counter
 }
 
-func newMetrics(cfg Config) (*metrics, metric.Registration, error) {
+func newMetrics(cfg Config) (*metrics, error) {
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = otel.GetMeterProvider()
 	}
@@ -83,7 +83,7 @@ func newMetrics(cfg Config) (*metrics, metric.Registration, error) {
 	for _, m := range histograms {
 		err := newFloat64Histogram(meter, m)
 		if err != nil {
-			return &ms, nil, err
+			return &ms, err
 		}
 	}
 
@@ -128,7 +128,7 @@ func newMetrics(cfg Config) (*metrics, metric.Registration, error) {
 	for _, m := range counters {
 		err := newInt64Counter(meter, m)
 		if err != nil {
-			return &ms, nil, err
+			return &ms, err
 		}
 	}
 
@@ -138,10 +138,10 @@ func newMetrics(cfg Config) (*metrics, metric.Registration, error) {
 		metric.WithDescription("Number of APM Events flushed to Elasticsearch. Dimensions are used to report the project ID, success or failures"),
 	)
 	if err != nil {
-		return &ms, nil, fmt.Errorf("elasticsearch: failed to create metric for elasticsearch processed events: %w", err)
+		return &ms, fmt.Errorf("elasticsearch: failed to create metric for elasticsearch processed events: %w", err)
 	}
 
-	reg, err := meter.RegisterCallback(func(_ context.Context, obs metric.Observer) error {
+	_, err = meter.RegisterCallback(func(_ context.Context, obs metric.Observer) error {
 		pattrs := metric.WithAttributeSet(cfg.MetricAttributes)
 		obs.ObserveInt64(elasticsearchEventsProcessed, atomic.LoadInt64(&ms.docsIndexed),
 			pattrs,
@@ -168,11 +168,10 @@ func newMetrics(cfg Config) (*metrics, metric.Registration, error) {
 	)
 
 	if err != nil {
-		return &ms, nil, fmt.Errorf("elasticsearch: failed to register metric callback: %w", err)
+		return &ms, fmt.Errorf("elasticsearch: failed to register metric callback: %w", err)
 	}
-	fmt.Println("successfully registered callback")
 
-	return &ms, reg, nil
+	return &ms, nil
 }
 
 func newInt64Counter(meter metric.Meter, c counterMetric) error {
