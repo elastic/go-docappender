@@ -52,7 +52,7 @@ type counterMetric struct {
 	p           *metric.Int64Counter
 }
 
-func newMetrics(cfg Config) (*metrics, error) {
+func newMetrics(cfg Config) (metrics, error) {
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = otel.GetMeterProvider()
 	}
@@ -76,7 +76,7 @@ func newMetrics(cfg Config) (*metrics, error) {
 	for _, m := range histograms {
 		err := newFloat64Histogram(meter, m)
 		if err != nil {
-			return &ms, err
+			return ms, err
 		}
 	}
 
@@ -126,11 +126,11 @@ func newMetrics(cfg Config) (*metrics, error) {
 	for _, m := range counters {
 		err := newInt64Counter(meter, m)
 		if err != nil {
-			return &ms, err
+			return ms, err
 		}
 	}
 
-	return &ms, nil
+	return ms, nil
 }
 
 func newInt64Counter(meter metric.Meter, c counterMetric) error {

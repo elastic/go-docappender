@@ -141,7 +141,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		available:      available,
 		closed:         make(chan struct{}),
 		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
-		metrics:        *ms,
+		metrics:        ms,
 		telemetryAttrs: cfg.MetricAttributes,
 	}
 	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
