@@ -31,7 +31,6 @@ type metrics struct {
 	bulkRequests          metric.Int64Counter
 	docsAdded             metric.Int64Counter
 	docsActive            metric.Int64Counter
-	docsFailed            metric.Int64Counter
 	docsIndexed           metric.Int64Counter
 	bytesTotal            metric.Int64Counter
 	availableBulkRequests metric.Int64Counter
