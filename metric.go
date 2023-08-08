@@ -98,7 +98,7 @@ func newMetrics(cfg Config) (metrics, error) {
 		},
 		{
 			name:        "elasticsearch.events.processed",
-			description: "Number of APM Events flushed to Elasticsearch. Dimensions are used to report the project ID, success or failures",
+			description: "Number of APM Events flushed to Elasticsearch. Attributes are used to report separate counts for different outcomes - success, client failure, etc.",
 			p:           &ms.docsIndexed,
 		},
 		{
