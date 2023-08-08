@@ -252,7 +252,7 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	a.addProcessedCount(1, &a.docsAdded, a.metrics.docsAdded, Success)
+	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
 	a.addCount(1, &a.docsActive, a.metrics.docsActive)
 	return nil
 }
@@ -350,7 +350,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		}
 	}
 	if docsFailed > 0 {
-		atomic.AddInt64(&a.docsFailed, int64(n))
+		atomic.AddInt64(&a.docsFailed, docsFailed)
 	}
 	if docsIndexed > 0 {
 		a.addProcessedCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed, Success)
