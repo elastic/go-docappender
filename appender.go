@@ -38,12 +38,19 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type ProcessedStatus string
+
 var (
 	// ErrClosed is returned from methods of closed Indexers.
 	ErrClosed = errors.New("model indexer closed")
 
 	errMissingIndex = errors.New("missing index name")
 	errMissingBody  = errors.New("missing document body")
+
+	success      ProcessedStatus = "Success"
+	failedClient ProcessedStatus = "FailedClient"
+	failedServer ProcessedStatus = "FailedServer"
+	tooMany      ProcessedStatus = "TooMany"
 )
 
 // Appender provides an append-only API for bulk indexing documents into Elasticsearch.
@@ -88,15 +95,6 @@ type Appender struct {
 	closed                chan struct{}
 }
 
-type ProcessedStatus string
-
-const (
-	Success      ProcessedStatus = "Success"
-	FailedClient ProcessedStatus = "FailedClient"
-	FailedServer ProcessedStatus = "FailedServer"
-	TooMany      ProcessedStatus = "TooMany"
-)
-
 // New returns a new Appender that indexes documents into Elasticsearch.
 func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
@@ -135,11 +133,12 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		}
 	}
 
+	baseAttrs := cfg.MetricAttributes.ToSlice()
 	processedEventAttrSet := map[ProcessedStatus]attribute.Set{
-		Success:      attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "Success"))...),
-		FailedClient: attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "FailedClient"))...),
-		FailedServer: attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "FailedServer"))...),
-		TooMany:      attribute.NewSet(append(cfg.MetricAttributes.ToSlice(), attribute.String("status", "TooMany"))...),
+		success:      attribute.NewSet(append(baseAttrs, attribute.String("status", "Success"))...),
+		failedClient: attribute.NewSet(append(baseAttrs, attribute.String("status", "FailedClient"))...),
+		failedServer: attribute.NewSet(append(baseAttrs, attribute.String("status", "FailedServer"))...),
+		tooMany:      attribute.NewSet(append(baseAttrs, attribute.String("status", "TooMany"))...),
 	}
 	ms, err := newMetrics(cfg)
 	if err != nil {
@@ -261,13 +260,7 @@ func (a *Appender) addProcessedCount(delta int64, lm *int64, m metric.Int64Count
 	// legacy metric
 	atomic.AddInt64(lm, delta)
 
-	attr, exist := a.processedEventAttrSet[status]
-	if !exist {
-		// warning
-		fmt.Println("UNKNOwN STATUS", attr)
-		return
-	}
-
+	attr := a.processedEventAttrSet[status]
 	m.Add(context.Background(), delta, metric.WithAttributeSet(attr))
 }
 
@@ -315,7 +308,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		var errTooMany errorTooManyRequests
 		// 429 may be returned as errors from the bulk indexer.
 		if errors.As(err, &errTooMany) {
-			a.addProcessedCount(int64(n), &a.tooManyRequests, a.metrics.docsIndexed, TooMany)
+			a.addProcessedCount(int64(n), &a.tooManyRequests, a.metrics.docsIndexed, tooMany)
 		}
 		return err
 	}
@@ -353,16 +346,16 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
 	}
 	if docsIndexed > 0 {
-		a.addProcessedCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed, Success)
+		a.addProcessedCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed, success)
 	}
 	if tooManyRequests > 0 {
-		a.addProcessedCount(tooManyRequests, &a.tooManyRequests, a.metrics.docsIndexed, TooMany)
+		a.addProcessedCount(tooManyRequests, &a.tooManyRequests, a.metrics.docsIndexed, tooMany)
 	}
 	if clientFailed > 0 {
-		a.addProcessedCount(clientFailed, &a.docsFailedClient, a.metrics.docsIndexed, FailedClient)
+		a.addProcessedCount(clientFailed, &a.docsFailedClient, a.metrics.docsIndexed, failedClient)
 	}
 	if serverFailed > 0 {
-		a.addProcessedCount(serverFailed, &a.docsFailedServer, a.metrics.docsIndexed, FailedServer)
+		a.addProcessedCount(serverFailed, &a.docsFailedServer, a.metrics.docsIndexed, failedServer)
 	}
 	logger.Debug(
 		"bulk request completed",

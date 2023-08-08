@@ -147,6 +147,7 @@ loop:
 		}
 	}
 
+	var processedAsserted int
 	assertProcessedCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
 		asserted++
 		counter := metric.Data.(metricdata.Sum[int64])
@@ -156,12 +157,16 @@ loop:
 			assert.True(t, exist)
 			switch status.AsString() {
 			case "Success":
+				processedAsserted++
 				assert.Equal(t, stats.Indexed, dp.Value)
 			case "FailedClient":
+				processedAsserted++
 				assert.Equal(t, stats.FailedClient, dp.Value)
 			case "FailedServer":
+				processedAsserted++
 				assert.Equal(t, stats.FailedServer, dp.Value)
 			case "TooMany":
+				processedAsserted++
 				assert.Equal(t, stats.TooManyRequests, dp.Value)
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
@@ -196,6 +201,7 @@ loop:
 	}
 	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, 6, asserted)
+	assert.Equal(t, 4, processedAsserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
@@ -622,7 +628,6 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	defer cancel()
 	go func() {
 		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(p []byte) (int, error) {
-			fmt.Println("hello?")
 			close(readInvoked)
 			return copy(p, "{}"), nil
 		}))
