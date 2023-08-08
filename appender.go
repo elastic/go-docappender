@@ -240,12 +240,13 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 	return nil
 }
 
-func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter) {
+func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
 	// legacy metric
 	atomic.AddInt64(lm, delta)
 
 	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	m.Add(context.Background(), delta, attrs)
+	opts = append(opts, attrs)
+	m.Add(context.Background(), delta, opts...)
 }
 
 func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
@@ -275,7 +276,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
 	}
 	if err != nil {
-		a.addCount(int64(n), &a.docsFailed, a.metrics.docsFailed)
+		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
@@ -284,7 +285,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		var errTooMany errorTooManyRequests
 		// 429 may be returned as errors from the bulk indexer.
 		if errors.As(err, &errTooMany) {
-			a.addCount(int64(n), &a.tooManyRequests, a.metrics.tooManyRequests)
+			a.addCount(int64(n),
+				&a.tooManyRequests,
+				a.metrics.docsIndexed,
+				metric.WithAttributes(attribute.String("status", "TooMany")),
+			)
 		}
 		return err
 	}
@@ -319,19 +324,35 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		}
 	}
 	if docsFailed > 0 {
-		a.addCount(docsFailed, &a.docsFailed, a.metrics.docsFailed)
+		atomic.AddInt64(&a.docsFailed, docsFailed)
 	}
 	if docsIndexed > 0 {
-		a.addCount(docsIndexed, &a.docsIndexed, a.metrics.docsIndexed)
+		a.addCount(docsIndexed,
+			&a.docsIndexed,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("status", "Success")),
+		)
 	}
 	if tooManyRequests > 0 {
-		a.addCount(tooManyRequests, &a.tooManyRequests, a.metrics.tooManyRequests)
+		a.addCount(tooManyRequests,
+			&a.tooManyRequests,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("status", "TooMany")),
+		)
 	}
 	if clientFailed > 0 {
-		a.addCount(clientFailed, &a.docsFailedClient, a.metrics.docsFailedClient)
+		a.addCount(clientFailed,
+			&a.docsFailedClient,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("status", "FailedClient")),
+		)
 	}
 	if serverFailed > 0 {
-		a.addCount(serverFailed, &a.docsFailedServer, a.metrics.docsFailedServer)
+		a.addCount(serverFailed,
+			&a.docsFailedServer,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("status", "FailedServer")),
+		)
 	}
 	logger.Debug(
 		"bulk request completed",

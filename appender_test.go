@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -145,6 +146,33 @@ loop:
 			assert.Equal(t, attrs, dp.Attributes)
 		}
 	}
+
+	var processedAsserted int
+	assertProcessedCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+		asserted++
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
+			status, exist := dp.Attributes.Value(attribute.Key("status"))
+			assert.True(t, exist)
+			switch status.AsString() {
+			case "Success":
+				processedAsserted++
+				assert.Equal(t, stats.Indexed, dp.Value)
+			case "FailedClient":
+				processedAsserted++
+				assert.Equal(t, stats.FailedClient, dp.Value)
+			case "FailedServer":
+				processedAsserted++
+				assert.Equal(t, stats.FailedServer, dp.Value)
+			case "TooMany":
+				processedAsserted++
+				assert.Equal(t, stats.TooManyRequests, dp.Value)
+			default:
+				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+			}
+		}
+	}
 	// check the set of names and then check the counter or histogram
 	unexpectedMetrics := []string{}
 	for _, metric := range rm.ScopeMetrics[0].Metrics {
@@ -155,16 +183,8 @@ loop:
 			assertCounter(metric, stats.Active, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
 			assertCounter(metric, stats.BulkRequests, indexerAttrs)
-		case "elasticsearch.failed.count":
-			assertCounter(metric, stats.Failed, indexerAttrs)
-		case "elasticsearch.failed.client.count":
-			assertCounter(metric, stats.FailedClient, indexerAttrs)
-		case "elasticsearch.failed.server.count":
-			assertCounter(metric, stats.FailedServer, indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertCounter(metric, stats.Indexed, indexerAttrs)
-		case "elasticsearch.failed.too_many_reqs":
-			assertCounter(metric, stats.TooManyRequests, indexerAttrs)
+			assertProcessedCounter(metric, stats.Indexed, indexerAttrs)
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
@@ -180,7 +200,8 @@ loop:
 		}
 	}
 	assert.Empty(t, unexpectedMetrics)
-	assert.Equal(t, 10, asserted)
+	assert.Equal(t, 6, asserted)
+	assert.Equal(t, 4, processedAsserted)
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
@@ -390,7 +411,7 @@ func TestAppenderFlushMetric(t *testing.T) {
 			if !ignoreCount {
 				assert.Equal(t, count, int(dp.Count))
 			} else {
-				assert.Greater(t, int(dp.Count), count)
+				assert.GreaterOrEqual(t, int(dp.Count), count)
 			}
 			assert.Positive(t, dp.Sum)
 			assert.Equal(t, attrs, dp.Attributes)
@@ -607,7 +628,6 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	defer cancel()
 	go func() {
 		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(p []byte) (int, error) {
-			fmt.Println("hello?")
 			close(readInvoked)
 			return copy(p, "{}"), nil
 		}))
