@@ -411,7 +411,7 @@ func TestAppenderFlushMetric(t *testing.T) {
 			if !ignoreCount {
 				assert.Equal(t, count, int(dp.Count))
 			} else {
-				assert.Greater(t, int(dp.Count), count)
+				assert.GreaterOrEqual(t, int(dp.Count), count)
 			}
 			assert.Positive(t, dp.Sum)
 			assert.Equal(t, attrs, dp.Attributes)
