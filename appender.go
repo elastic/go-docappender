@@ -81,7 +81,6 @@ type Appender struct {
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
-	telemetryAttrs        attribute.Set
 	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
@@ -137,12 +136,11 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		cfg.Logger = zap.NewNop()
 	}
 	indexer := &Appender{
-		config:         cfg,
-		available:      available,
-		closed:         make(chan struct{}),
-		bulkItems:      make(chan bulkIndexerItem, cfg.DocumentBufferSize),
-		metrics:        ms,
-		telemetryAttrs: cfg.MetricAttributes,
+		config:    cfg,
+		available: available,
+		closed:    make(chan struct{}),
+		bulkItems: make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		metrics:   ms,
 	}
 	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
@@ -439,7 +437,7 @@ func (a *Appender) runActiveIndexer() {
 		if active != nil {
 			indexer := active
 			active = nil
-			attrs := metric.WithAttributeSet(a.telemetryAttrs)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
 			a.errgroup.Go(func() error {
 				var err error
 				took := timeFunc(func() {
