@@ -212,7 +212,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
 		Header:     make(http.Header),
-		FilterPath: []string{"items.**._index", "items.**.status", "items.**.error.type", "items.**.error.reason"},
+		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
 	}
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
