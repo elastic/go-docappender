@@ -50,10 +50,10 @@ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
-go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.3 h1:ahFfYDBPNq6G0Vsqncg3cs0HwcEQ76yKdhQeKKvGPck=
-go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.3/go.mod h1:2kByxP0WjwX/9vRTKGAlqctTr7tQLN7hSfWPNLQJ+eM=
-go.elastic.co/apm/module/apmhttp/v2 v2.4.3 h1:bBqbbtQSEL+uVpH5CS656E9x6pXha8kkZ468/G0T5Eo=
-go.elastic.co/apm/module/apmhttp/v2 v2.4.3/go.mod h1:PsafA29/iwRva1ouV+70Lfu6RyAJHh6Zcc+jL6eZ83E=
+go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.4 h1:TVcEjy/gs/DVk3aaBYNGm6B7uOkC6BTlDFRzyvBkMlw=
+go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.4/go.mod h1:xWKnT5lKqFwNgT3nkWumBCXCt597cHkSuyIWWMXpv78=
+go.elastic.co/apm/module/apmhttp/v2 v2.4.4 h1:BcJDLFztZByHiJRXXvAHY7bue9+vhzMLn2OBK5N8HDw=
+go.elastic.co/apm/module/apmhttp/v2 v2.4.4/go.mod h1:694qsHWRPVkfYqQ224ZSeRx9Dt2FS/xF1igNBGkHi6o=
 go.elastic.co/apm/module/apmzap/v2 v2.4.4 h1:t1Ml4R5KapIoCJzem3d/bEaG0X7Gij0QijFPuf8wba8=
 go.elastic.co/apm/module/apmzap/v2 v2.4.4/go.mod h1:iYOVJKZEIWYr+VdD3IO0zjhC8j6my+v5vZNePNSgmIY=
 go.elastic.co/apm/v2 v2.4.4 h1:KGbmUEtLNQ6sCFGpqTMhfRjqDOKP8IliO+efErKY5lU=

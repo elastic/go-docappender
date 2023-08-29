@@ -6,7 +6,7 @@ require (
 	github.com/elastic/go-elasticsearch/v8 v8.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/stretchr/testify v1.8.4
-	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.3
+	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.4
 	go.elastic.co/apm/module/apmzap/v2 v2.4.4
 	go.elastic.co/apm/v2 v2.4.4
 	go.elastic.co/fastjson v1.3.0
@@ -32,7 +32,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	go.elastic.co/apm/module/apmhttp/v2 v2.4.3 // indirect
+	go.elastic.co/apm/module/apmhttp/v2 v2.4.4 // indirect
 	go.opentelemetry.io/otel/sdk v1.17.0 // indirect
 	go.opentelemetry.io/otel/trace v1.17.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
