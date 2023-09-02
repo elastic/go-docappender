@@ -166,7 +166,7 @@ func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			documentBodyCopy := *documentBody
-			if err := indexer.Add(ctx, "logs-foo-testing", &documentBodyCopy); err != nil {
+			if err := indexer.Add(ctx, &documentBodyCopy, 1); err != nil {
 				b.Fatal(err)
 			}
 		}

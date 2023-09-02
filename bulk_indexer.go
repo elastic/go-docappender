@@ -52,7 +52,6 @@ type bulkIndexer struct {
 	bytesFlushed int
 	jsonw        fastjson.Writer
 	gzipw        *gzip.Writer
-	copybuf      [32 * 1024]byte
 	writer       io.Writer
 	buf          bytes.Buffer
 }
@@ -159,43 +158,17 @@ func (b *bulkIndexer) BytesFlushed() int {
 }
 
 type bulkIndexerItem struct {
-	Index      string
-	Action     string
-	DocumentID string
-	Body       io.Reader
+	Body io.Reader
+	size int
 }
 
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
-	b.writeMeta(item.Index, item.Action, item.DocumentID)
-	if _, err := io.CopyBuffer(b.writer, item.Body, b.copybuf[:]); err != nil {
+	if _, err := item.Body.(io.WriterTo).WriteTo(b.writer); err != nil {
 		return err
 	}
-	if _, err := b.writer.Write([]byte("\n")); err != nil {
-		return err
-	}
-	b.itemsAdded++
+	b.itemsAdded += item.size
 	return nil
-}
-
-func (b *bulkIndexer) writeMeta(index, action, documentID string) {
-	b.jsonw.RawByte('{')
-	b.jsonw.String(action)
-	b.jsonw.RawString(":{")
-	if documentID != "" {
-		b.jsonw.RawString(`"_id":`)
-		b.jsonw.String(documentID)
-	}
-	if index != "" {
-		if documentID != "" {
-			b.jsonw.RawByte(',')
-		}
-		b.jsonw.RawString(`"_index":`)
-		b.jsonw.String(index)
-	}
-	b.jsonw.RawString("}}\n")
-	b.writer.Write(b.jsonw.Bytes())
-	b.jsonw.Reset()
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.

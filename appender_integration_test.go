@@ -65,7 +65,7 @@ func TestAppenderIntegration(t *testing.T) {
 	for i := 0; i < N; i++ {
 		encoded, err := json.Marshal(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)})
 		require.NoError(t, err)
-		err = indexer.Add(context.Background(), index, bytes.NewReader(encoded))
+		err = indexer.Add(context.Background(), bytes.NewReader(encoded), 1)
 		require.NoError(t, err)
 	}
 

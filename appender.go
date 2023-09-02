@@ -208,10 +208,7 @@ func (a *Appender) Stats() Stats {
 //
 // The document io.Reader will be accessed after Add returns, and must remain
 // accessible until its Read method returns EOF, or its WriterTo method returns.
-func (a *Appender) Add(ctx context.Context, index string, document io.Reader) error {
-	if index == "" {
-		return errMissingIndex
-	}
+func (a *Appender) Add(ctx context.Context, document io.Reader, count int) error {
 	if document == nil {
 		return errMissingBody
 	}
@@ -220,11 +217,8 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 	// documents to be processed by an active bulk indexer in a dedicated
 	// goroutine, improving data locality and minimising lock contention.
 	item := bulkIndexerItem{
-		Index: index,
-		Body:  document,
-
-		// Appender is append-only, hence the action is always "create".
-		Action: "create",
+		Body: document,
+		size: count,
 	}
 	select {
 	case <-ctx.Done():
@@ -233,8 +227,8 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
-	a.addCount(1, &a.docsActive, a.metrics.docsActive)
+	a.addCount(int64(item.size), &a.docsAdded, a.metrics.docsAdded)
+	a.addCount(int64(item.size), &a.docsActive, a.metrics.docsActive)
 	return nil
 }
 

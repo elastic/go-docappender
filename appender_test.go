@@ -262,12 +262,12 @@ func TestAppenderEncoding(t *testing.T) {
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	err = indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+	err = indexer.Add(context.Background(), newJSONReader(map[string]any{
 		"@timestamp":            time.Unix(123, 456789111).UTC().Format(docappendertest.TimestampFormat),
 		"data_stream.type":      "logs",
 		"data_stream.dataset":   "foo",
 		"data_stream.namespace": "testing",
-	}))
+	}), 1)
 	require.NoError(t, err)
 
 	// Closing the indexer flushes enqueued documents.
@@ -627,10 +627,10 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	addContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(p []byte) (int, error) {
+		added <- indexer.Add(addContext, readerFunc(func(p []byte) (int, error) {
 			close(readInvoked)
 			return copy(p, "{}"), nil
-		}))
+		}), 1)
 	}()
 
 	// Add should block, and the Reader should not be invoked.
@@ -761,12 +761,12 @@ func TestAppenderScaling(t *testing.T) {
 	}
 	sendDocuments := func(t *testing.T, indexer *docappender.Appender, docs int) {
 		for i := 0; i < docs; i++ {
-			err := indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+			err := indexer.Add(context.Background(), newJSONReader(map[string]any{
 				"@timestamp":            time.Now().Format(docappendertest.TimestampFormat),
 				"data_stream.type":      "logs",
 				"data_stream.dataset":   "foo",
 				"data_stream.namespace": "namespace",
-			}))
+			}), 1)
 			require.NoError(t, err)
 		}
 	}
@@ -1062,9 +1062,9 @@ func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 }
 
 func addMinimalDoc(t testing.TB, indexer *docappender.Appender, index string) {
-	err := indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+	err := indexer.Add(context.Background(), newJSONReader(map[string]any{
 		"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
-	}))
+	}), 1)
 	require.NoError(t, err)
 }
 
