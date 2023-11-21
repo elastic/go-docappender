@@ -348,6 +348,31 @@ func TestAppenderFlushInterval(t *testing.T) {
 	}
 }
 
+func TestAppenderFlushTimeout(t *testing.T) {
+	done := make(chan struct{}, 1)
+	defer close(done)
+
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-done:
+		}
+	})
+	indexer, err := docappender.New(client, docappender.Config{
+		// Default flush bytes is 5MB
+		FlushInterval: time.Millisecond,
+		FlushTimeout:  100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	addMinimalDoc(t, indexer, "logs-foo-testing")
+
+	assert.Eventually(t, func() bool {
+		return indexer.Stats().BulkRequests == 1
+	}, 10*time.Second, 10*time.Millisecond)
+}
+
 func TestAppenderFlushMetric(t *testing.T) {
 	requests := make(chan esutil.BulkIndexerResponse)
 	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {

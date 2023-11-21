@@ -66,6 +66,11 @@ type Config struct {
 	// If FlushInterval is zero, the default of 30 seconds will be used.
 	FlushInterval time.Duration
 
+	// FlushTimeout holds the flush timeout as a duration.
+	//
+	// If FlushTimeout is zero, no timeout will be used.
+	FlushTimeout time.Duration
+
 	// DocumentBufferSize sets the number of documents that can be buffered before
 	// they are stored in the active indexer buffer.
 	//
