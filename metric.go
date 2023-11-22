@@ -30,10 +30,10 @@ type metrics struct {
 
 	bulkRequests          metric.Int64Counter
 	docsAdded             metric.Int64Counter
-	docsActive            metric.Int64Counter
+	docsActive            metric.Int64UpDownCounter
 	docsIndexed           metric.Int64Counter
 	bytesTotal            metric.Int64Counter
-	availableBulkRequests metric.Int64Counter
+	availableBulkRequests metric.Int64UpDownCounter
 	activeCreated         metric.Int64Counter
 	activeDestroyed       metric.Int64Counter
 }
@@ -50,6 +50,13 @@ type counterMetric struct {
 	description string
 	unit        string
 	p           *metric.Int64Counter
+}
+
+type upDownCounterMetric struct {
+	name        string
+	description string
+	unit        string
+	p           *metric.Int64UpDownCounter
 }
 
 func newMetrics(cfg Config) (metrics, error) {
@@ -92,11 +99,6 @@ func newMetrics(cfg Config) (metrics, error) {
 			p:           &ms.docsAdded,
 		},
 		{
-			name:        "elasticsearch.events.queued",
-			description: "the number of active items waiting in the indexer's queue.",
-			p:           &ms.docsActive,
-		},
-		{
 			name:        "elasticsearch.events.processed",
 			description: "Number of APM Events flushed to Elasticsearch. Attributes are used to report separate counts for different outcomes - success, client failure, etc.",
 			p:           &ms.docsIndexed,
@@ -106,11 +108,6 @@ func newMetrics(cfg Config) (metrics, error) {
 			description: "The total number of bytes written to the request body",
 			unit:        "by",
 			p:           &ms.bytesTotal,
-		},
-		{
-			name:        "elasticsearch.bulk_requests.available",
-			description: "The number of bulk indexers available for making bulk index requests.",
-			p:           &ms.availableBulkRequests,
 		},
 		{
 			name:        "elasticsearch.indexer.created",
@@ -130,6 +127,25 @@ func newMetrics(cfg Config) (metrics, error) {
 		}
 	}
 
+	upDownCounters := []upDownCounterMetric{
+		{
+			name:        "elasticsearch.events.queued",
+			description: "the number of active items waiting in the indexer's queue.",
+			p:           &ms.docsActive,
+		},
+		{
+			name:        "elasticsearch.bulk_requests.available",
+			description: "The number of bulk indexers available for making bulk index requests.",
+			p:           &ms.availableBulkRequests,
+		},
+	}
+	for _, m := range upDownCounters {
+		err := newInt64UpDownCounter(meter, m)
+		if err != nil {
+			return ms, err
+		}
+	}
+
 	return ms, nil
 }
 
@@ -139,6 +155,26 @@ func newInt64Counter(meter metric.Meter, c counterMetric) error {
 		unit = "1"
 	}
 	m, err := meter.Int64Counter(
+		c.name,
+		metric.WithUnit(unit),
+		metric.WithDescription(c.description),
+	)
+
+	if err != nil {
+		return fmt.Errorf(
+			"failed creating %s metric: %w", c.name, err,
+		)
+	}
+	*c.p = m
+	return nil
+}
+
+func newInt64UpDownCounter(meter metric.Meter, c upDownCounterMetric) error {
+	unit := c.unit
+	if unit == "" {
+		unit = "1"
+	}
+	m, err := meter.Int64UpDownCounter(
 		c.name,
 		metric.WithUnit(unit),
 		metric.WithDescription(c.description),

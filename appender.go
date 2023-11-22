@@ -142,7 +142,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		bulkItems: make(chan bulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
-	indexer.addCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
+	indexer.addUpDownCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
@@ -234,11 +234,20 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 	case a.bulkItems <- item:
 	}
 	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
-	a.addCount(1, &a.docsActive, a.metrics.docsActive)
+	a.addUpDownCount(1, &a.docsActive, a.metrics.docsActive)
 	return nil
 }
 
 func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
+	// legacy metric
+	atomic.AddInt64(lm, delta)
+
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	opts = append(opts, attrs)
+	m.Add(context.Background(), delta, opts...)
+}
+
+func (a *Appender) addUpDownCount(delta int64, lm *int64, m metric.Int64UpDownCounter, opts ...metric.AddOption) {
 	// legacy metric
 	atomic.AddInt64(lm, delta)
 
@@ -252,7 +261,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	if n == 0 {
 		return nil
 	}
-	defer a.addCount(-int64(n), &a.docsActive, a.metrics.docsActive)
+	defer a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
@@ -393,7 +402,7 @@ func (a *Appender) runActiveIndexer() {
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
 			active = <-a.available
-			a.addCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.add(item); err != nil {
@@ -456,7 +465,7 @@ func (a *Appender) runActiveIndexer() {
 				})
 				indexer.Reset()
 				a.available <- indexer
-				a.addCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)
