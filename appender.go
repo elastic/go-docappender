@@ -267,7 +267,18 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		logger = logger.With(apmzap.TraceContext(ctx)...)
 	}
 
-	resp, err := bulkIndexer.Flush(ctx)
+	var flushCtx context.Context
+
+	if a.config.FlushTimeout != 0 {
+		var flushCancel context.CancelFunc
+		flushCtx, flushCancel = context.WithTimeout(ctx, a.config.FlushTimeout)
+		defer flushCancel()
+	} else {
+		flushCtx = ctx
+	}
+
+	resp, err := bulkIndexer.Flush(flushCtx)
+
 	// Record the bulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
