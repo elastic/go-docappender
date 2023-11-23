@@ -6,7 +6,7 @@ require (
 	github.com/elastic/go-elasticsearch/v8 v8.11.0
 	github.com/json-iterator/go v1.1.12
 	github.com/stretchr/testify v1.8.4
-	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.5
+	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.6
 	go.elastic.co/apm/module/apmzap/v2 v2.4.6
 	go.elastic.co/apm/v2 v2.4.6
 	go.elastic.co/fastjson v1.3.0
