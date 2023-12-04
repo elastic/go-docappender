@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"sort"
@@ -656,9 +657,10 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	addContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(p []byte) (int, error) {
+		added <- indexer.Add(addContext, "logs-foo-testing", readerFunc(func(w io.Writer) (int64, error) {
 			close(readInvoked)
-			return copy(p, "{}"), nil
+			n, err := w.Write([]byte("{}"))
+			return int64(n), err
 		}))
 	}()
 
@@ -703,9 +705,9 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	}
 }
 
-type readerFunc func([]byte) (n int, err error)
+type readerFunc func(io.Writer) (n int64, err error)
 
-func (f readerFunc) Read(p []byte) (n int, err error) {
+func (f readerFunc) WriteTo(p io.Writer) (n int64, err error) {
 	return f(p)
 }
 
