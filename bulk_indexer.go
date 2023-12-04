@@ -47,13 +47,13 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type bulkIndexer struct {
-	client           *elasticsearch.Client
-	itemsAdded       int
-	bytesFlushed     int
-	jsonw            fastjson.Writer
-	buf              bytes.Buffer
-	compressionLevel int
-	compressedBuf    bytes.Buffer
+	client        *elasticsearch.Client
+	itemsAdded    int
+	bytesFlushed  int
+	jsonw         fastjson.Writer
+	gzipw         *gzip.Writer
+	buf           bytes.Buffer
+	compressedBuf bytes.Buffer
 }
 
 type BulkIndexerResponseStat struct {
@@ -122,10 +122,11 @@ func init() {
 }
 
 func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
-	return &bulkIndexer{
-		client:           client,
-		compressionLevel: compressionLevel,
+	b := &bulkIndexer{client: client}
+	if compressionLevel != gzip.NoCompression {
+		b.gzipw, _ = gzip.NewWriterLevel(&b.compressedBuf, compressionLevel)
 	}
+	return b
 }
 
 // BulkIndexer resets b, ready for a new request.
@@ -142,7 +143,7 @@ func (b *bulkIndexer) Items() int {
 
 // Len returns the number of buffered bytes.
 func (b *bulkIndexer) Len() int {
-	if b.compressionLevel == gzip.NoCompression {
+	if b.gzipw == nil {
 		return b.buf.Len()
 	}
 	return b.compressedBuf.Len()
@@ -169,8 +170,8 @@ func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	if _, err := b.buf.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
-	if b.compressionLevel != gzip.NoCompression && b.buf.Len() > 512*1024 {
-		if err := compress(&b.compressedBuf, b.compressionLevel, b.buf); err != nil {
+	if b.gzipw != nil && b.buf.Len() > 512*1024 {
+		if err := compress(b.gzipw, &b.buf, &b.compressedBuf); err != nil {
 			return fmt.Errorf("failed to compress %d bytes: %w", b.buf.Len(), err)
 		}
 		b.buf.Reset()
@@ -206,11 +207,11 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	var body bytes.Buffer
-	compressed := b.compressionLevel != gzip.NoCompression && b.compressedBuf.Len() != 0
+	compressed := b.gzipw != nil && b.compressedBuf.Len() != 0
 
 	if compressed {
 		if b.buf.Len() != 0 {
-			if err := compress(&b.compressedBuf, b.compressionLevel, b.buf); err != nil {
+			if err := compress(b.gzipw, &b.buf, &b.compressedBuf); err != nil {
 				return BulkIndexerResponseStat{}, fmt.Errorf("failed to compress buffered events before flushing: %w", err)
 			}
 			b.buf.Reset()
@@ -254,12 +255,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	return resp, nil
 }
 
-func compress(w io.Writer, level int, buf bytes.Buffer) error {
-	gzipw, err := gzip.NewWriterLevel(w, level)
-	if err != nil {
-		return fmt.Errorf("failed to create gzip writer: %w", err)
-	}
-	if _, err := gzipw.Write(buf.Bytes()); err != nil {
+func compress(gzipw *gzip.Writer, in *bytes.Buffer, out *bytes.Buffer) error {
+	gzipw.Reset(out)
+	if _, err := gzipw.Write(in.Bytes()); err != nil {
 		return fmt.Errorf("failed to write to gzip writer: %w", err)
 	}
 	if err := gzipw.Close(); err != nil {
