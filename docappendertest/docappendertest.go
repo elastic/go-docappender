@@ -60,7 +60,9 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 	var indexed [][]byte
 	var result esutil.BulkIndexerResponse
 	for scanner.Scan() {
-		action := make(map[string]interface{})
+		action := make(map[string]struct {
+			Index string `json:"_index"`
+		})
 		if err := json.NewDecoder(strings.NewReader(scanner.Text())).Decode(&action); err != nil {
 			panic(err)
 		}
@@ -77,7 +79,7 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 		}
 		indexed = append(indexed, doc)
 
-		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated}
+		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
 	}
 	return indexed, result

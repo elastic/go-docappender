@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -599,6 +600,78 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
 }
 
+func TestAppenderRetryDocument(t *testing.T) {
+	testCases := map[string]struct {
+		cfg docappender.Config
+	}{
+		"nocompression": {
+			cfg: docappender.Config{
+				MaxRequests:   1,
+				FlushInterval: 100 * time.Millisecond,
+			},
+		},
+		"gzip": {
+			cfg: docappender.Config{
+				MaxRequests:      1,
+				FlushInterval:    100 * time.Millisecond,
+				CompressionLevel: gzip.BestCompression,
+			},
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var failedFirst atomic.Bool
+			var done atomic.Bool
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				if failedFirst.CompareAndSwap(false, true) {
+					assert.Len(t, result.Items, 10)
+					for i, item := range result.Items {
+						switch i {
+						case 0, 4, 5, 6, 9:
+							itemResp := item["create"]
+							itemResp.Status = http.StatusTooManyRequests
+							item["create"] = itemResp
+						}
+					}
+					json.NewEncoder(w).Encode(result)
+					return
+				}
+				require.Len(t, result.Items, 6)
+				assert.Equal(t, "logs-foo-testing0", result.Items[0]["create"].Index)
+				assert.Equal(t, "logs-foo-testing4", result.Items[1]["create"].Index)
+				assert.Equal(t, "logs-foo-testing5", result.Items[2]["create"].Index)
+				assert.Equal(t, "logs-foo-testing6", result.Items[3]["create"].Index)
+				assert.Equal(t, "logs-foo-testing9", result.Items[4]["create"].Index)
+				json.NewEncoder(w).Encode(result)
+				done.Store(true)
+			})
+
+			indexer, err := docappender.New(client, tc.cfg)
+			require.NoError(t, err)
+			defer indexer.Close(context.Background())
+
+			const N = 10
+			for i := 0; i < N; i++ {
+				addMinimalDoc(t, indexer, "logs-foo-testing"+strconv.Itoa(i))
+			}
+
+			require.Eventually(t, func() bool {
+				return failedFirst.Load()
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			addMinimalDoc(t, indexer, "logs-foo-testing10")
+
+			require.Eventually(t, func() bool {
+				return done.Load()
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for second flush request to finish")
+
+			err = indexer.Close(context.Background())
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestAppenderCloseFlushContext(t *testing.T) {
 	srvctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1104,7 +1177,7 @@ func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 }
 
 func addMinimalDoc(t testing.TB, indexer *docappender.Appender, index string) {
-	err := indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+	err := indexer.Add(context.Background(), index, newJSONReader(map[string]any{
 		"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
 	}))
 	require.NoError(t, err)

@@ -67,6 +67,8 @@ type BulkIndexerResponseItem struct {
 	Index  string `json:"_index"`
 	Status int    `json:"status"`
 
+	Position int
+
 	Error struct {
 		Type   string `json:"type"`
 		Reason string `json:"reason"`
@@ -78,6 +80,7 @@ func init() {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 			switch s {
 			case "items":
+				var idx int
 				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
 						var item BulkIndexerResponseItem
@@ -109,6 +112,8 @@ func init() {
 							}
 							return true
 						})
+						item.Position = idx
+						idx++
 						if item.Error.Type != "" || item.Status > 201 {
 							(*((*BulkIndexerResponseStat)(ptr))).FailedDocs = append((*((*BulkIndexerResponseStat)(ptr))).FailedDocs, item)
 						} else {
@@ -140,7 +145,11 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compress
 
 // BulkIndexer resets b, ready for a new request.
 func (b *bulkIndexer) Reset() {
-	b.itemsAdded, b.bytesFlushed = 0, 0
+	b.bytesFlushed = 0
+}
+
+func (b *bulkIndexer) resetBuf() {
+	b.itemsAdded = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -211,6 +220,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
+	copyBuf := b.buf.Bytes()
+
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
 		Header:     make(http.Header),
@@ -223,9 +234,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
+		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
 	}
 	defer res.Body.Close()
+
+	b.resetBuf()
+
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
@@ -240,7 +255,72 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
+
+	for _, biri := range resp.FailedDocs {
+		if biri.Status == http.StatusTooManyRequests {
+			startlnIdx := biri.Position * 2
+			endlnIdx := startlnIdx + 2
+
+			if b.gzipw != nil {
+				gr, err := gzip.NewReader(bytes.NewReader(copyBuf))
+				if err != nil {
+					return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+				}
+				defer gr.Close()
+
+				seen := 0
+
+				buf := make([]byte, 1024)
+				n, _ := gr.Read(buf[:1024])
+				buf = buf[:n]
+				for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
+					seen += newlines
+					n, _ := gr.Read(buf[:1024])
+					buf = buf[:n]
+				}
+
+				start := Indexnth(buf, startlnIdx-seen, '\n') + 1
+				end := Indexnth(buf, endlnIdx-seen, '\n') + 1
+
+				for end == 0 {
+					// Add more capacity (let append pick how much).
+					buf = append(buf, 0)[:len(buf)]
+
+					n, _ := gr.Read(buf[len(buf):cap(buf)])
+					buf = buf[:len(buf)+n]
+
+					end = Indexnth(buf, endlnIdx-seen, '\n') + 1
+				}
+
+				b.writer.Write(buf[start:end])
+			} else {
+				start := Indexnth(copyBuf, startlnIdx, '\n') + 1
+				end := Indexnth(copyBuf, endlnIdx, '\n') + 1
+
+				b.writer.Write(copyBuf[start:end])
+			}
+
+			b.itemsAdded++
+		}
+	}
+
 	return resp, nil
+}
+
+// Indexnth returns the index of the nth instance of sep in s.
+// It returns -1 if sep is not present in s or nth is 0.
+func Indexnth(s []byte, nth int, sep rune) int {
+	if nth == 0 {
+		return -1
+	}
+
+	count := 0
+	return bytes.IndexFunc(s, func(r rune) bool {
+		if r == '\n' {
+			count++
+		}
+		return nth == count
+	})
 }
 
 type errorTooManyRequests struct {
