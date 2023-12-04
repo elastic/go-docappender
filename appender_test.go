@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -575,12 +576,15 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	err = indexer.Close(context.Background())
 	assert.NoError(t, err)
 
-	entries := observed.FilterMessageSnippet("failed to index document").TakeAll()
-	require.Len(t, entries, N)
-	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_even", entries[0].Message)
-	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_odd", entries[1].Message)
-	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_even", entries[2].Message)
-	assert.Equal(t, "failed to index document in 'an_index' (error_type): error_reason_odd", entries[3].Message)
+	entries := observed.FilterMessageSnippet("failed to index").TakeAll()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Message < entries[j].Message
+	})
+	require.Len(t, entries, N/2)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[0].Message)
+	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[1].Message)
+	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
 }
 
 func TestAppenderCloseFlushContext(t *testing.T) {

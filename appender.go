@@ -313,6 +313,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	}
 	var docsFailed, docsIndexed, tooManyRequests, clientFailed, serverFailed int64
 	docsIndexed = resp.Indexed
+	var failedCount map[BulkIndexerResponseItem]int
+	if len(resp.FailedDocs) > 0 {
+		failedCount = make(map[BulkIndexerResponseItem]int, len(resp.FailedDocs))
+	}
 	for _, info := range resp.FailedDocs {
 		if info.Error.Type != "" || info.Status > 201 {
 			docsFailed++
@@ -326,20 +330,18 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 			if info.Status >= 500 {
 				serverFailed++
 			}
-			// NOTE(axw) error type and reason are included
-			// in the error message so we can observe different
-			// error types/reasons when logging is rate limited.
-			logger.Error(fmt.Sprintf(
-				"failed to index document in '%s' (%s): %s",
-				info.Index, info.Error.Type, info.Error.Reason,
-			))
-
+			failedCount[info]++
 			if a.tracingEnabled() {
 				apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
 			}
 		} else {
 			docsIndexed++
 		}
+	}
+	for key, count := range failedCount {
+		logger.Error(fmt.Sprintf("failed to index documents in '%s' (%s): %s",
+			key.Index, key.Error.Type, key.Error.Reason,
+		), zap.Int("documents", count))
 	}
 	if docsFailed > 0 {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
