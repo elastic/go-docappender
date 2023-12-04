@@ -209,13 +209,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	compressed := b.compressionLevel != gzip.NoCompression && b.compressedBuf.Len() != 0
 
 	if compressed {
-		body = b.compressedBuf
 		if b.buf.Len() != 0 {
 			if err := compress(&b.compressedBuf, b.compressionLevel, b.buf); err != nil {
 				return BulkIndexerResponseStat{}, fmt.Errorf("failed to compress buffered events before flushing: %w", err)
 			}
 			b.buf.Reset()
 		}
+		body = b.compressedBuf
 	} else {
 		body = b.buf
 	}
