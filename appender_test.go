@@ -551,9 +551,9 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 			itemResp.Index = "an_index"
 			itemResp.Error.Type = "error_type"
 			if i%2 == 0 {
-				itemResp.Error.Reason = "error_reason_even"
+				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
 			} else {
-				itemResp.Error.Reason = "error_reason_odd"
+				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
 			}
 			item["create"] = itemResp
 		}

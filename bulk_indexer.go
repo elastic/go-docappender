@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"unsafe"
 
 	"go.elastic.co/fastjson"
@@ -80,7 +81,7 @@ func init() {
 			case "items":
 				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
-						item := BulkIndexerResponseItem{}
+						var item BulkIndexerResponseItem
 						i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 							switch s {
 							case "_index":
@@ -93,7 +94,12 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										item.Error.Reason = i.ReadString()
+										// Match Elasticsearch field mapper field value:
+										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
+										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
+										item.Error.Reason, _, _ = strings.Cut(
+											i.ReadString(), ". Preview",
+										)
 									default:
 										i.Skip()
 									}
