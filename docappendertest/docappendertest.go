@@ -25,10 +25,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/module/apmelasticsearch/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
@@ -110,4 +114,27 @@ func HandleBulk(mux *http.ServeMux, bulkHandler http.HandlerFunc) {
 		w.Header().Set("X-Elastic-Product", "Elasticsearch")
 		bulkHandler.ServeHTTP(w, r)
 	})
+}
+
+// NewAssertCounter returns a function that canbe used to assert counter metrics
+func NewAssertCounter(t testing.TB, asserted *atomic.Int64) func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+	t.Helper()
+
+	return func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
+		asserted.Add(1)
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			assert.Equal(t, count, dp.Value)
+			assert.Equal(t, attrs, dp.Attributes)
+		}
+	}
+}
+
+// AssertOTelMetrics asserts OTel metrics using a closure.
+func AssertOTelMetrics(t testing.TB, ms []metricdata.Metrics, assert func(m metricdata.Metrics)) {
+	t.Helper()
+
+	for _, m := range ms {
+		assert(m)
+	}
 }
