@@ -166,14 +166,13 @@ func (b *bulkIndexer) BytesFlushed() int {
 
 type bulkIndexerItem struct {
 	Index      string
-	Action     string
 	DocumentID string
 	Body       io.Reader
 }
 
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
-	b.writeMeta(item.Index, item.Action, item.DocumentID)
+	b.writeMeta(item.Index, item.DocumentID)
 	if _, err := io.CopyBuffer(b.writer, item.Body, b.copybuf[:]); err != nil {
 		return err
 	}
@@ -184,10 +183,8 @@ func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	return nil
 }
 
-func (b *bulkIndexer) writeMeta(index, action, documentID string) {
-	b.jsonw.RawByte('{')
-	b.jsonw.String(action)
-	b.jsonw.RawString(":{")
+func (b *bulkIndexer) writeMeta(index, documentID string) {
+	b.jsonw.RawString(`{"create":{`)
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
 		b.jsonw.String(documentID)
@@ -233,19 +230,17 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
+	var resp BulkIndexerResponseStat
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
-			return BulkIndexerResponseStat{}, errorTooManyRequests{res: res}
+			return resp, errorTooManyRequests{res: res}
 		}
-		return BulkIndexerResponseStat{}, fmt.Errorf("flush failed: %s", res.String())
+		return resp, fmt.Errorf("flush failed: %s", res.String())
 	}
-
-	resp := BulkIndexerResponseStat{}
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return BulkIndexerResponseStat{}, fmt.Errorf("error decoding bulk response: %w", err)
+		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
-
 	return resp, nil
 }
 

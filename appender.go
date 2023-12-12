@@ -222,9 +222,6 @@ func (a *Appender) Add(ctx context.Context, index string, document io.Reader) er
 	item := bulkIndexerItem{
 		Index: index,
 		Body:  document,
-
-		// Appender is append-only, hence the action is always "create".
-		Action: "create",
 	}
 	select {
 	case <-ctx.Done():
