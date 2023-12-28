@@ -48,13 +48,14 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type bulkIndexer struct {
-	client        *elasticsearch.Client
-	itemsAdded    int
-	bytesFlushed  int
-	jsonw         fastjson.Writer
-	gzipw         *gzip.Writer
-	buf           bytes.Buffer
-	compressedBuf bytes.Buffer
+	client            *elasticsearch.Client
+	itemsAdded        int
+	bytesFlushed      int
+	jsonw             fastjson.Writer
+	gzipw             *gzip.Writer
+	compressThreshold int
+	buf               bytes.Buffer
+	compressedBuf     bytes.Buffer
 }
 
 type BulkIndexerResponseStat struct {
@@ -127,10 +128,13 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
-	b := &bulkIndexer{client: client}
+func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compressThreshold int) *bulkIndexer {
+	b := &bulkIndexer{client: client, compressThreshold: compressThreshold}
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.compressedBuf, compressionLevel)
+	}
+	if compressThreshold == 0 {
+		b.compressThreshold = 512 * 1024
 	}
 	return b
 }
@@ -175,7 +179,7 @@ func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	if _, err := b.buf.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
-	if b.gzipw != nil && b.buf.Len() > 512*1024 {
+	if b.gzipw != nil && b.buf.Len() > b.compressThreshold {
 		if err := compress(b.gzipw, &b.buf, &b.compressedBuf); err != nil {
 			return fmt.Errorf("failed to compress %d bytes: %w", b.buf.Len(), err)
 		}
