@@ -222,9 +222,6 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 	item := bulkIndexerItem{
 		Index: index,
 		Body:  document,
-
-		// Appender is append-only, hence the action is always "create".
-		Action: "create",
 	}
 	select {
 	case <-ctx.Done():
@@ -240,20 +237,22 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 
 func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
 	// legacy metric
-	atomic.AddInt64(lm, delta)
+	if lm != nil {
+		atomic.AddInt64(lm, delta)
+	}
 
 	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	opts = append(opts, attrs)
-	m.Add(context.Background(), delta, opts...)
+	m.Add(context.Background(), delta, append(opts, attrs)...)
 }
 
 func (a *Appender) addUpDownCount(delta int64, lm *int64, m metric.Int64UpDownCounter, opts ...metric.AddOption) {
 	// legacy metric
-	atomic.AddInt64(lm, delta)
+	if lm != nil {
+		atomic.AddInt64(lm, delta)
+	}
 
 	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	opts = append(opts, attrs)
-	m.Add(context.Background(), delta, opts...)
+	m.Add(context.Background(), delta, append(opts, attrs)...)
 }
 
 func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
@@ -298,6 +297,14 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
+		}
+
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			a.addCount(int64(n),
+				nil,
+				a.metrics.docsIndexed,
+				metric.WithAttributes(attribute.String("status", "Timeout")),
+			)
 		}
 
 		var errTooMany errorTooManyRequests

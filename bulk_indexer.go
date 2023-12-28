@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"unsafe"
 
 	"go.elastic.co/fastjson"
@@ -79,7 +80,7 @@ func init() {
 			case "items":
 				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
-						item := BulkIndexerResponseItem{}
+						var item BulkIndexerResponseItem
 						i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 							switch s {
 							case "_index":
@@ -92,7 +93,12 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										item.Error.Reason = i.ReadString()
+										// Match Elasticsearch field mapper field value:
+										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
+										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
+										item.Error.Reason, _, _ = strings.Cut(
+											i.ReadString(), ". Preview",
+										)
 									default:
 										i.Skip()
 									}
@@ -156,14 +162,13 @@ func (b *bulkIndexer) BytesFlushed() int {
 
 type bulkIndexerItem struct {
 	Index      string
-	Action     string
 	DocumentID string
 	Body       io.WriterTo
 }
 
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
-	b.writeMeta(item.Index, item.Action, item.DocumentID)
+	b.writeMeta(item.Index, item.DocumentID)
 	if _, err := item.Body.WriteTo(&b.buf); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -180,10 +185,8 @@ func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	return nil
 }
 
-func (b *bulkIndexer) writeMeta(index, action, documentID string) {
-	b.jsonw.RawByte('{')
-	b.jsonw.String(action)
-	b.jsonw.RawString(":{")
+func (b *bulkIndexer) writeMeta(index, documentID string) {
+	b.jsonw.RawString(`{"create":{`)
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
 		b.jsonw.String(documentID)
@@ -239,19 +242,17 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
+	var resp BulkIndexerResponseStat
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
-			return BulkIndexerResponseStat{}, errorTooManyRequests{res: res}
+			return resp, errorTooManyRequests{res: res}
 		}
-		return BulkIndexerResponseStat{}, fmt.Errorf("flush failed: %s", res.String())
+		return resp, fmt.Errorf("flush failed: %s", res.String())
 	}
-
-	resp := BulkIndexerResponseStat{}
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return BulkIndexerResponseStat{}, fmt.Errorf("error decoding bulk response: %w", err)
+		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
-
 	return resp, nil
 }
 

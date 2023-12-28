@@ -19,8 +19,10 @@ package docappender_test
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/fastjson"
+	"go.uber.org/zap"
 
 	"github.com/elastic/go-docappender"
 	"github.com/elastic/go-docappender/docappendertest"
@@ -105,6 +108,51 @@ func BenchmarkAppender(b *testing.B) {
 	})
 }
 
+func BenchmarkAppenderError(b *testing.B) {
+	client := docappendertest.NewMockElasticsearchClient(b, func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, result := docappendertest.DecodeBulkRequest(r)
+		for i, item := range result.Items {
+			itemResp := item["create"]
+			itemResp.Index = "an_index"
+			itemResp.Error.Type = "error_type"
+			if i%2 == 0 {
+				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
+			} else {
+				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
+			}
+			item["create"] = itemResp
+		}
+		result.HasErrors = true
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.New(client, docappender.Config{
+		Logger: zap.NewNop(),
+	})
+	require.NoError(b, err)
+	b.Cleanup(func() { indexer.Close(context.Background()) })
+
+	documentBody := newDocumentBody()
+	b.SetBytes(int64(documentBody.Len())) // bytes processed each iteration
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			documentBodyCopy := *documentBody
+			if err := indexer.Add(ctx, "logs-foo-testing", &documentBodyCopy); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// Closing the indexer flushes enqueued events.
+	if err := indexer.Close(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+}
+
 func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 	var indexed int64
 	client := docappendertest.NewMockElasticsearchClient(b, func(w http.ResponseWriter, r *http.Request) {
@@ -148,12 +196,7 @@ func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 	require.NoError(b, err)
 	defer indexer.Close(context.Background())
 
-	documentBody := newJSONReader(map[string]any{
-		"@timestamp":            time.Now().Format(docappendertest.TimestampFormat),
-		"data_stream.type":      "logs",
-		"data_stream.dataset":   "foo",
-		"data_stream.namespace": "testing",
-	})
+	documentBody := newDocumentBody()
 	b.SetBytes(int64(documentBody.Len())) // bytes processed each iteration
 
 	// We can't pass context.Background() to the indexer because it's using
@@ -177,4 +220,13 @@ func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 		b.Fatal(err)
 	}
 	assert.Equal(b, int64(b.N), indexed)
+}
+
+func newDocumentBody() *bytes.Reader {
+	return newJSONReader(map[string]any{
+		"@timestamp":            time.Now().Format(docappendertest.TimestampFormat),
+		"data_stream.type":      "logs",
+		"data_stream.dataset":   "foo",
+		"data_stream.namespace": "testing",
+	})
 }

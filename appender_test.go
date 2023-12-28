@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,19 +140,12 @@ loop:
 
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
-	var asserted int
-	assertCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
-		asserted++
-		counter := metric.Data.(metricdata.Sum[int64])
-		for _, dp := range counter.DataPoints {
-			assert.Equal(t, count, dp.Value)
-			assert.Equal(t, attrs, dp.Attributes)
-		}
-	}
+	var asserted atomic.Int64
+	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 
 	var processedAsserted int
-	assertProcessedCounter := func(metric metricdata.Metrics, count int64, attrs attribute.Set) {
-		asserted++
+	assertProcessedCounter := func(metric metricdata.Metrics, attrs attribute.Set) {
+		asserted.Add(1)
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
 			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
@@ -177,32 +171,30 @@ loop:
 	}
 	// check the set of names and then check the counter or histogram
 	unexpectedMetrics := []string{}
-	for _, metric := range rm.ScopeMetrics[0].Metrics {
-		switch metric.Name {
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
 		case "elasticsearch.events.count":
-			assertCounter(metric, stats.Added, indexerAttrs)
+			assertCounter(m, stats.Added, indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(metric, stats.Active, indexerAttrs)
+			assertCounter(m, stats.Active, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
-			assertCounter(metric, stats.BulkRequests, indexerAttrs)
+			assertCounter(m, stats.BulkRequests, indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertProcessedCounter(metric, stats.Indexed, indexerAttrs)
+			assertProcessedCounter(m, indexerAttrs)
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(metric, stats.AvailableBulkRequests, indexerAttrs)
+			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
-			assertCounter(metric, stats.BytesTotal, indexerAttrs)
-		case "elasticsearch.buffer.latency":
-			// expect this metric name but no assertions done
-			// as it's histogram and it's checked elsewhere
-		case "elasticsearch.flushed.latency":
+			assertCounter(m, stats.BytesTotal, indexerAttrs)
+		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
 		default:
-			unexpectedMetrics = append(unexpectedMetrics, metric.Name)
+			unexpectedMetrics = append(unexpectedMetrics, m.Name)
 		}
-	}
+	})
+
 	assert.Empty(t, unexpectedMetrics)
-	assert.Equal(t, 6, asserted)
+	assert.Equal(t, int64(6), asserted.Load())
 	assert.Equal(t, 4, processedAsserted)
 }
 
@@ -354,25 +346,44 @@ func TestAppenderFlushTimeout(t *testing.T) {
 	done := make(chan struct{}, 1)
 	defer close(done)
 
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-done:
 		}
 	})
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.DeltaTemporality
+		},
+	))
 	indexer, err := docappender.New(client, docappender.Config{
 		// Default flush bytes is 5MB
-		FlushInterval: time.Millisecond,
-		FlushTimeout:  100 * time.Millisecond,
+		FlushBytes:    1,
+		FlushTimeout:  50 * time.Millisecond,
+		MeterProvider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
 	addMinimalDoc(t, indexer, "logs-foo-testing")
 
-	assert.Eventually(t, func() bool {
-		return indexer.Stats().BulkRequests == 1
-	}, 10*time.Second, 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	indexer.Close(ctx)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+	var asserted atomic.Int64
+	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.processed":
+			assertCounter(m, 1, attribute.NewSet(attribute.String("status", "Timeout")))
+		}
+	})
+	assert.Equal(t, int64(1), asserted.Load())
 }
 
 func TestAppenderFlushMetric(t *testing.T) {
@@ -552,9 +563,9 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 			itemResp.Index = "an_index"
 			itemResp.Error.Type = "error_type"
 			if i%2 == 0 {
-				itemResp.Error.Reason = "error_reason_even"
+				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
 			} else {
-				itemResp.Error.Reason = "error_reason_odd"
+				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
 			}
 			item["create"] = itemResp
 		}
