@@ -130,7 +130,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel)
+		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.FlushBytes/2)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -206,9 +206,9 @@ func (a *Appender) Stats() Stats {
 // The document body will be copied to a buffer using io.Copy, and document may
 // implement io.WriterTo to reduce overhead of copying.
 //
-// The document io.Reader will be accessed after Add returns, and must remain
+// The document io.WriterTo will be accessed after Add returns, and must remain
 // accessible until its Read method returns EOF, or its WriterTo method returns.
-func (a *Appender) Add(ctx context.Context, index string, document io.Reader) error {
+func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) error {
 	if index == "" {
 		return errMissingIndex
 	}

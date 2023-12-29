@@ -186,6 +186,7 @@ func benchmarkAppender(b *testing.B, cfg docappender.Config) {
 			jsonw.RawString(`{"create":{"status":201}}`)
 			n++
 		}
+		require.NoError(b, scanner.Err())
 		jsonw.RawString(`]}`)
 		w.Write(jsonw.Bytes())
 		atomic.AddInt64(&indexed, n)
