@@ -133,9 +133,6 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compress
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.compressedBuf, compressionLevel)
 	}
-	if compressThreshold == 0 {
-		b.compressThreshold = 512 * 1024
-	}
 	return b
 }
 

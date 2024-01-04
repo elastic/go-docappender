@@ -106,6 +106,9 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	if cfg.DocumentBufferSize <= 0 {
 		cfg.DocumentBufferSize = 1024
 	}
+	if cfg.CompressionThreshold == 0 {
+		cfg.CompressionThreshold = 512 * 1024
+	}
 	if !cfg.Scaling.Disabled {
 		if cfg.Scaling.ScaleDown.Threshold == 0 {
 			cfg.Scaling.ScaleDown.Threshold = 30
@@ -130,7 +133,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.FlushBytes/2)
+		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.CompressionThreshold)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
