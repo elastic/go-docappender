@@ -626,6 +626,14 @@ func TestAppenderRetryDocument(t *testing.T) {
 				CompressionThreshold: 100,
 			},
 		},
+		"gzip-all": {
+			cfg: docappender.Config{
+				MaxRequests:          1,
+				FlushInterval:        100 * time.Millisecond,
+				CompressionLevel:     gzip.BestCompression,
+				CompressionThreshold: 1000,
+			},
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
