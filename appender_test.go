@@ -637,11 +637,12 @@ func TestAppenderRetryDocument(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			var failedFirst atomic.Bool
+			var failedCount atomic.Int32
 			var done atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 				_, result := docappendertest.DecodeBulkRequest(r)
-				if failedFirst.CompareAndSwap(false, true) {
+				switch failedCount.Add(1) {
+				case 1:
 					assert.Len(t, result.Items, 10)
 					for i, item := range result.Items {
 						switch i {
@@ -653,13 +654,35 @@ func TestAppenderRetryDocument(t *testing.T) {
 					}
 					json.NewEncoder(w).Encode(result)
 					return
+				case 2:
+					assert.Len(t, result.Items, 7)
+					assert.Equal(t, "logs-foo-testing0", result.Items[0]["create"].Index)
+					assert.Equal(t, "logs-foo-testing4", result.Items[1]["create"].Index)
+					assert.Equal(t, "logs-foo-testing5", result.Items[2]["create"].Index)
+					assert.Equal(t, "logs-foo-testing6", result.Items[3]["create"].Index)
+					assert.Equal(t, "logs-foo-testing9", result.Items[4]["create"].Index)
+					assert.Equal(t, "logs-foo-testing10", result.Items[5]["create"].Index)
+					assert.Equal(t, "logs-foo-testing11", result.Items[6]["create"].Index)
+
+					for i, item := range result.Items {
+						switch i {
+						case 0, 1, 3, 5, 6:
+							itemResp := item["create"]
+							itemResp.Status = http.StatusTooManyRequests
+							item["create"] = itemResp
+						}
+					}
+					json.NewEncoder(w).Encode(result)
+					return
+
 				}
 				require.Len(t, result.Items, 6)
 				assert.Equal(t, "logs-foo-testing0", result.Items[0]["create"].Index)
 				assert.Equal(t, "logs-foo-testing4", result.Items[1]["create"].Index)
-				assert.Equal(t, "logs-foo-testing5", result.Items[2]["create"].Index)
-				assert.Equal(t, "logs-foo-testing6", result.Items[3]["create"].Index)
-				assert.Equal(t, "logs-foo-testing9", result.Items[4]["create"].Index)
+				assert.Equal(t, "logs-foo-testing6", result.Items[2]["create"].Index)
+				assert.Equal(t, "logs-foo-testing10", result.Items[3]["create"].Index)
+				assert.Equal(t, "logs-foo-testing11", result.Items[4]["create"].Index)
+				assert.Equal(t, "logs-foo-testing12", result.Items[5]["create"].Index)
 				json.NewEncoder(w).Encode(result)
 				done.Store(true)
 			})
@@ -674,10 +697,17 @@ func TestAppenderRetryDocument(t *testing.T) {
 			}
 
 			require.Eventually(t, func() bool {
-				return failedFirst.Load()
+				return failedCount.Load() == 1
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
 
 			addMinimalDoc(t, indexer, "logs-foo-testing10")
+			addMinimalDoc(t, indexer, "logs-foo-testing11")
+
+			require.Eventually(t, func() bool {
+				return failedCount.Load() == 2
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			addMinimalDoc(t, indexer, "logs-foo-testing12")
 
 			require.Eventually(t, func() bool {
 				return done.Load()
