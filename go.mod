@@ -7,8 +7,8 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/stretchr/testify v1.8.4
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.7
-	go.elastic.co/apm/module/apmzap/v2 v2.4.7
-	go.elastic.co/apm/v2 v2.4.7
+	go.elastic.co/apm/module/apmzap/v2 v2.4.8
+	go.elastic.co/apm/v2 v2.4.8
 	go.elastic.co/fastjson v1.3.0
 	go.opentelemetry.io/otel v1.21.0
 	go.opentelemetry.io/otel/metric v1.21.0
