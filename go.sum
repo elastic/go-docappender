@@ -52,10 +52,10 @@ go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.7 h1:Gfp+wxPotE1s5X5ufn3W28zYa
 go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.7/go.mod h1:taxw6rHuZtTF0p0DAv1xAg0fkvGprVIJu92JvbcgifU=
 go.elastic.co/apm/module/apmhttp/v2 v2.4.7 h1:IL+DRK8ODO791ai/l1g/8dk6E3VPomiV0jbRIxBWbqM=
 go.elastic.co/apm/module/apmhttp/v2 v2.4.7/go.mod h1:Itj4PGNVO33Tpp/9UPf4A6pCezTmADRRi/ytLAGms24=
-go.elastic.co/apm/module/apmzap/v2 v2.4.7 h1:j96pvon+IhbFpzV4IflXwxOKD+l5rApyyN2ycarJG6Y=
-go.elastic.co/apm/module/apmzap/v2 v2.4.7/go.mod h1:bi0A6hYYwModJI70LJDB8IHqw7291Ub16LRdEXNcOcU=
-go.elastic.co/apm/v2 v2.4.7 h1:m5B2m59KgbiupuzFUkKqEvwHABIZxl2Ob0tCgc0XG9w=
-go.elastic.co/apm/v2 v2.4.7/go.mod h1:+CiBUdrrAGnGCL9TNx7tQz3BrfYV23L8Ljvotoc87so=
+go.elastic.co/apm/module/apmzap/v2 v2.4.8 h1:bU1ESD6Pm2cx1Nmlos0YRQQrdQoFynbYP3imTfIxee4=
+go.elastic.co/apm/module/apmzap/v2 v2.4.8/go.mod h1:+pWYgTIT9utt48DVOiBesXQZ3rOVERsE1cS+q0wUafo=
+go.elastic.co/apm/v2 v2.4.8 h1:3RuqxDjhgumT1BYxJGnVPdGY12lCzF+KGyvtSTynCYo=
+go.elastic.co/apm/v2 v2.4.8/go.mod h1:+CiBUdrrAGnGCL9TNx7tQz3BrfYV23L8Ljvotoc87so=
 go.elastic.co/fastjson v1.3.0 h1:hJO3OsYIhiqiT4Fgu0ZxAECnKASbwgiS+LMW5oCopKs=
 go.elastic.co/fastjson v1.3.0/go.mod h1:K9vDh7O0ODsVKV2B5e2XYLY277QZaCbB3tS1SnARvko=
 go.opentelemetry.io/otel v1.21.0 h1:hzLeKBZEL7Okw2mGzZ0cc4k/A7Fta0uoPgaJCr8fsFc=
