@@ -48,14 +48,13 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type bulkIndexer struct {
-	client            *elasticsearch.Client
-	itemsAdded        int
-	bytesFlushed      int
-	jsonw             fastjson.Writer
-	gzipw             *gzip.Writer
-	compressThreshold int
-	buf               bytes.Buffer
-	compressedBuf     bytes.Buffer
+	client       *elasticsearch.Client
+	itemsAdded   int
+	bytesFlushed int
+	jsonw        fastjson.Writer
+	writer       io.Writer
+	gzipw        *gzip.Writer
+	buf          bytes.Buffer
 }
 
 type BulkIndexerResponseStat struct {
@@ -129,9 +128,12 @@ func init() {
 }
 
 func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compressThreshold int) *bulkIndexer {
-	b := &bulkIndexer{client: client, compressThreshold: compressThreshold}
+	b := &bulkIndexer{client: client}
 	if compressionLevel != gzip.NoCompression {
-		b.gzipw, _ = gzip.NewWriterLevel(&b.compressedBuf, compressionLevel)
+		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
+		b.writer = b.gzipw
+	} else {
+		b.writer = &b.buf
 	}
 	return b
 }
@@ -139,8 +141,10 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compress
 // BulkIndexer resets b, ready for a new request.
 func (b *bulkIndexer) Reset() {
 	b.itemsAdded, b.bytesFlushed = 0, 0
-	b.compressedBuf.Reset()
 	b.buf.Reset()
+	if b.gzipw != nil {
+		b.gzipw.Reset(&b.buf)
+	}
 }
 
 // Added returns the number of buffered items.
@@ -150,10 +154,7 @@ func (b *bulkIndexer) Items() int {
 
 // Len returns the number of buffered bytes.
 func (b *bulkIndexer) Len() int {
-	if b.gzipw == nil {
-		return b.buf.Len()
-	}
-	return b.compressedBuf.Len()
+	return b.buf.Len()
 }
 
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
@@ -170,17 +171,11 @@ type bulkIndexerItem struct {
 // add encodes an item in the buffer.
 func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	b.writeMeta(item.Index, item.DocumentID)
-	if _, err := item.Body.WriteTo(&b.buf); err != nil {
+	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
-	if _, err := b.buf.Write([]byte("\n")); err != nil {
+	if _, err := b.writer.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
-	}
-	if b.gzipw != nil && b.buf.Len() > b.compressThreshold {
-		if err := compress(b.gzipw, &b.buf, &b.compressedBuf); err != nil {
-			return fmt.Errorf("failed to compress %d bytes: %w", b.buf.Len(), err)
-		}
-		b.buf.Reset()
 	}
 	b.itemsAdded++
 	return nil
@@ -200,7 +195,7 @@ func (b *bulkIndexer) writeMeta(index, documentID string) {
 		b.jsonw.String(index)
 	}
 	b.jsonw.RawString("}}\n")
-	b.buf.Write(b.jsonw.Bytes())
+	b.writer.Write(b.jsonw.Bytes())
 	b.jsonw.Reset()
 }
 
@@ -210,31 +205,22 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return BulkIndexerResponseStat{}, nil
 	}
 
-	var body bytes.Buffer
-	compressed := b.gzipw != nil && b.compressedBuf.Len() != 0
-
-	if compressed {
-		if b.buf.Len() != 0 {
-			if err := compress(b.gzipw, &b.buf, &b.compressedBuf); err != nil {
-				return BulkIndexerResponseStat{}, fmt.Errorf("failed to compress buffered events before flushing: %w", err)
-			}
-			b.buf.Reset()
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return BulkIndexerResponseStat{}, fmt.Errorf("failed closing the gzip writer: %w", err)
 		}
-		body = b.compressedBuf
-	} else {
-		body = b.buf
 	}
 
 	req := esapi.BulkRequest{
-		Body:       &body,
+		Body:       &b.buf,
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
 	}
-	if compressed {
+	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
-	bytesFlushed := body.Len()
+	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
@@ -255,18 +241,6 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 	return resp, nil
-}
-
-func compress(gzipw *gzip.Writer, in *bytes.Buffer, out *bytes.Buffer) error {
-	gzipw.Reset(out)
-	if _, err := gzipw.Write(in.Bytes()); err != nil {
-		return fmt.Errorf("failed to write to gzip writer: %w", err)
-	}
-	if err := gzipw.Close(); err != nil {
-		return fmt.Errorf("failed to close gzip writer: %w", err)
-	}
-
-	return nil
 }
 
 type errorTooManyRequests struct {
