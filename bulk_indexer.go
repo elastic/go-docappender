@@ -271,7 +271,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				seen := 0
 
 				buf := make([]byte, 1024)
-				n, _ := gr.Read(buf[:1024])
+				n, _ := gr.Read(buf)
 				buf = buf[:n]
 				for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
 					seen += newlines
