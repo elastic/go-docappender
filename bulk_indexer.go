@@ -220,7 +220,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	copyBuf := b.buf.Bytes()
+
+	copyBuf := make([]byte, b.buf.Len())
+	copy(copyBuf, b.buf.Bytes())
 
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
