@@ -256,6 +256,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
+	buf := make([]byte, 1024)
+
 	for _, res := range resp.FailedDocs {
 		if res.Status == http.StatusTooManyRequests {
 			startlnIdx := res.Position * 2
@@ -270,12 +272,11 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 				seen := 0
 
-				buf := make([]byte, 1024)
-				n, _ := gr.Read(buf)
+				n, _ := gr.Read(buf[:cap(buf)])
 				buf = buf[:n]
 				for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
 					seen += newlines
-					n, _ := gr.Read(buf[:1024])
+					n, _ := gr.Read(buf[:cap(buf)])
 					buf = buf[:n]
 				}
 
