@@ -220,7 +220,6 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-
 	copyBuf := make([]byte, b.buf.Len())
 	copy(copyBuf, b.buf.Bytes())
 
