@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -610,21 +611,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 				FlushInterval: 100 * time.Millisecond,
 			},
 		},
-		"gzip-small": {
-			cfg: docappender.Config{
-				MaxRequests:      1,
-				FlushInterval:    100 * time.Millisecond,
-				CompressionLevel: gzip.BestCompression,
-			},
-		},
-		"gzip-big": {
-			cfg: docappender.Config{
-				MaxRequests:      1,
-				FlushInterval:    100 * time.Millisecond,
-				CompressionLevel: gzip.BestCompression,
-			},
-		},
-		"gzip-all": {
+		"gzip": {
 			cfg: docappender.Config{
 				MaxRequests:      1,
 				FlushInterval:    100 * time.Millisecond,
@@ -690,7 +677,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 
 			const N = 10
 			for i := 0; i < N; i++ {
-				addMinimalDoc(t, indexer, "logs-foo-testing"+strconv.Itoa(i))
+				addDoc(t, indexer, "logs-foo-testing"+strconv.Itoa(i))
 			}
 
 			require.Eventually(t, func() bool {
@@ -1223,6 +1210,14 @@ func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 func addMinimalDoc(t testing.TB, indexer *docappender.Appender, index string) {
 	err := indexer.Add(context.Background(), index, newJSONReader(map[string]any{
 		"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+	}))
+	require.NoError(t, err)
+}
+
+func addDoc(t testing.TB, indexer *docappender.Appender, index string) {
+	err := indexer.Add(context.Background(), index, newJSONReader(map[string]any{
+		"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		"agent":      map[string]any{"name": strings.Repeat("foobar", 1000)},
 	}))
 	require.NoError(t, err)
 }
