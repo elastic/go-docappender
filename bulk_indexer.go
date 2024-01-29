@@ -256,9 +256,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
-	for _, biri := range resp.FailedDocs {
-		if biri.Status == http.StatusTooManyRequests {
-			startlnIdx := biri.Position * 2
+	for _, res := range resp.FailedDocs {
+		if res.Status == http.StatusTooManyRequests {
+			startlnIdx := res.Position * 2
 			endlnIdx := startlnIdx + 2
 
 			if b.gzipw != nil {
