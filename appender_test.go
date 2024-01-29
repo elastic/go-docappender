@@ -612,23 +612,23 @@ func TestAppenderRetryDocument(t *testing.T) {
 		},
 		"gzip-small": {
 			cfg: docappender.Config{
-				MaxRequests:          1,
-				FlushInterval:        100 * time.Millisecond,
-				CompressionLevel:     gzip.BestCompression,
+				MaxRequests:      1,
+				FlushInterval:    100 * time.Millisecond,
+				CompressionLevel: gzip.BestCompression,
 			},
 		},
 		"gzip-big": {
 			cfg: docappender.Config{
-				MaxRequests:          1,
-				FlushInterval:        100 * time.Millisecond,
-				CompressionLevel:     gzip.BestCompression,
+				MaxRequests:      1,
+				FlushInterval:    100 * time.Millisecond,
+				CompressionLevel: gzip.BestCompression,
 			},
 		},
 		"gzip-all": {
 			cfg: docappender.Config{
-				MaxRequests:          1,
-				FlushInterval:        100 * time.Millisecond,
-				CompressionLevel:     gzip.BestCompression,
+				MaxRequests:      1,
+				FlushInterval:    100 * time.Millisecond,
+				CompressionLevel: gzip.BestCompression,
 			},
 		},
 	}
