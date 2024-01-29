@@ -615,7 +615,6 @@ func TestAppenderRetryDocument(t *testing.T) {
 				MaxRequests:          1,
 				FlushInterval:        100 * time.Millisecond,
 				CompressionLevel:     gzip.BestCompression,
-				CompressionThreshold: 2,
 			},
 		},
 		"gzip-big": {
@@ -623,7 +622,6 @@ func TestAppenderRetryDocument(t *testing.T) {
 				MaxRequests:          1,
 				FlushInterval:        100 * time.Millisecond,
 				CompressionLevel:     gzip.BestCompression,
-				CompressionThreshold: 100,
 			},
 		},
 		"gzip-all": {
@@ -631,7 +629,6 @@ func TestAppenderRetryDocument(t *testing.T) {
 				MaxRequests:          1,
 				FlushInterval:        100 * time.Millisecond,
 				CompressionLevel:     gzip.BestCompression,
-				CompressionThreshold: 1000,
 			},
 		},
 	}

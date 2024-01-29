@@ -132,7 +132,7 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compressThreshold int) *bulkIndexer {
+func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
 	b := &bulkIndexer{client: client}
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
