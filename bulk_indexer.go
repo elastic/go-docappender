@@ -294,6 +294,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 				count := b.retryCounts[res.Position] + 1
 				if count > b.maxDocumentRetry {
+					tmp = append(tmp, res)
 					continue
 				}
 
