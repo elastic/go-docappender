@@ -318,7 +318,7 @@ func Indexnth(s []byte, nth int, sep rune) int {
 
 	count := 0
 	return bytes.IndexFunc(s, func(r rune) bool {
-		if r == '\n' {
+		if r == sep {
 			count++
 		}
 		return nth == count
