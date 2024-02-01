@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -54,6 +55,7 @@ type bulkIndexer struct {
 	jsonw        fastjson.Writer
 	writer       io.Writer
 	gzipw        *gzip.Writer
+	copyBuf      []byte
 	buf          bytes.Buffer
 }
 
@@ -220,8 +222,11 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	copyBuf := make([]byte, b.buf.Len())
-	copy(copyBuf, b.buf.Bytes())
+	if cap(b.copyBuf) < b.buf.Len() {
+		b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
+		b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
+	}
+	copy(b.copyBuf, b.buf.Bytes())
 
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
@@ -265,7 +270,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			endlnIdx := startlnIdx + 2
 
 			if b.gzipw != nil {
-				gr, err := gzip.NewReader(bytes.NewReader(copyBuf))
+				gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))
 				if err != nil {
 					return resp, fmt.Errorf("failed to decompress request payload: %w", err)
 				}
@@ -296,10 +301,10 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 				b.writer.Write(buf[start:end])
 			} else {
-				start := Indexnth(copyBuf, startlnIdx, '\n') + 1
-				end := Indexnth(copyBuf, endlnIdx, '\n') + 1
+				start := Indexnth(b.copyBuf, startlnIdx, '\n') + 1
+				end := Indexnth(b.copyBuf, endlnIdx, '\n') + 1
 
-				b.writer.Write(copyBuf[start:end])
+				b.writer.Write(b.copyBuf[start:end])
 			}
 
 			b.itemsAdded++
