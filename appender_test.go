@@ -601,6 +601,102 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
 }
 
+func TestAppenderRetryLimit(t *testing.T) {
+	var failedCount atomic.Int32
+	var done atomic.Bool
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		switch failedCount.Add(1) {
+		case 1:
+			// Fail logs-foo-testing1 to ensure retries are working
+			require.Len(t, result.Items, 2)
+			for i, item := range result.Items {
+				if i == 1 {
+					itemResp := item["create"]
+					itemResp.Status = http.StatusTooManyRequests
+					item["create"] = itemResp
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+			return
+		case 2:
+			// Fail logs-foo-testing2 to test the max retries setting
+			require.Len(t, result.Items, 2, result.Items)
+			assert.Equal(t, "logs-foo-testing1", result.Items[0]["create"].Index)
+			assert.Equal(t, "logs-foo-testing2", result.Items[1]["create"].Index)
+
+			for i, item := range result.Items {
+				if i == 1 {
+					itemResp := item["create"]
+					itemResp.Status = http.StatusTooManyRequests
+					item["create"] = itemResp
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+			return
+		case 3:
+			// Fail all events
+			// logs-foo-testing2 should not be retried because above the max setting
+			// logs-foo-testing3 should be retried normally in the next request
+			require.Len(t, result.Items, 2)
+			assert.Equal(t, "logs-foo-testing2", result.Items[0]["create"].Index)
+			assert.Equal(t, "logs-foo-testing3", result.Items[1]["create"].Index)
+
+			for _, item := range result.Items {
+				itemResp := item["create"]
+				itemResp.Status = http.StatusTooManyRequests
+				item["create"] = itemResp
+			}
+			json.NewEncoder(w).Encode(result)
+			return
+		}
+		// logs-foo-testing2 dropped
+		// logs-foo-testing3 retried
+		// logs-foo-testing4 new event
+		require.Len(t, result.Items, 2)
+		assert.Equal(t, "logs-foo-testing3", result.Items[0]["create"].Index)
+		assert.Equal(t, "logs-foo-testing4", result.Items[1]["create"].Index)
+		json.NewEncoder(w).Encode(result)
+		done.Store(true)
+	})
+
+	indexer, err := docappender.New(client, docappender.Config{
+		MaxRequests:        1,
+		MaxDocumentRetries: 1,
+		FlushInterval:      100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	addDoc(t, indexer, "logs-foo-testing0")
+	addDoc(t, indexer, "logs-foo-testing1")
+
+	require.Eventually(t, func() bool {
+		return failedCount.Load() == 1
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+	addMinimalDoc(t, indexer, "logs-foo-testing2")
+
+	require.Eventually(t, func() bool {
+		return failedCount.Load() == 2
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for second flush request to fail")
+
+	addMinimalDoc(t, indexer, "logs-foo-testing3")
+
+	require.Eventually(t, func() bool {
+		return failedCount.Load() == 3
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for third flush request to fail")
+
+	addMinimalDoc(t, indexer, "logs-foo-testing4")
+
+	require.Eventually(t, func() bool {
+		return done.Load()
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for last flush request to finish")
+
+	err = indexer.Close(context.Background())
+	assert.NoError(t, err)
+}
+
 func TestAppenderRetryDocument(t *testing.T) {
 	testCases := map[string]struct {
 		cfg docappender.Config

@@ -49,14 +49,16 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type bulkIndexer struct {
-	client       *elasticsearch.Client
-	itemsAdded   int
-	bytesFlushed int
-	jsonw        fastjson.Writer
-	writer       io.Writer
-	gzipw        *gzip.Writer
-	copyBuf      []byte
-	buf          bytes.Buffer
+	client           *elasticsearch.Client
+	maxDocumentRetry int
+	itemsAdded       int
+	bytesFlushed     int
+	jsonw            fastjson.Writer
+	writer           io.Writer
+	gzipw            *gzip.Writer
+	copyBuf          []byte
+	buf              bytes.Buffer
+	retryCounts      map[int]int
 }
 
 type BulkIndexerResponseStat struct {
@@ -135,8 +137,10 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int) *bulkIndexer {
+func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxRetryDoc int) *bulkIndexer {
 	b := &bulkIndexer{client: client}
+	b.maxDocumentRetry = maxRetryDoc
+	b.retryCounts = make(map[int]int)
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
 		b.writer = b.gzipw
@@ -267,11 +271,30 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	buf := make([]byte, 1024)
 
+	for k := range b.retryCounts {
+		found := false
+		for _, res := range resp.FailedDocs {
+			if res.Position == k {
+				found = true
+			}
+		}
+		if !found {
+			delete(b.retryCounts, k)
+		}
+	}
+
 	tmp := resp.FailedDocs[:0]
 	for _, res := range resp.FailedDocs {
 		if res.Status == http.StatusTooManyRequests {
 			startlnIdx := res.Position * 2
 			endlnIdx := startlnIdx + 2
+
+			count := b.retryCounts[res.Position] + 1
+			if count > b.maxDocumentRetry {
+				continue
+			}
+
+			b.retryCounts[b.itemsAdded] = count
 
 			if b.gzipw != nil {
 				gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))

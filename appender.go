@@ -130,7 +130,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel)
+		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
