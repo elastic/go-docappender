@@ -703,15 +703,17 @@ func TestAppenderRetryDocument(t *testing.T) {
 	}{
 		"nocompression": {
 			cfg: docappender.Config{
-				MaxRequests:   1,
-				FlushInterval: 100 * time.Millisecond,
+				MaxRequests:        1,
+				MaxDocumentRetries: 100,
+				FlushInterval:      100 * time.Millisecond,
 			},
 		},
 		"gzip": {
 			cfg: docappender.Config{
-				MaxRequests:      1,
-				FlushInterval:    100 * time.Millisecond,
-				CompressionLevel: gzip.BestCompression,
+				MaxRequests:        1,
+				MaxDocumentRetries: 100,
+				FlushInterval:      100 * time.Millisecond,
+				CompressionLevel:   gzip.BestCompression,
 			},
 		},
 	}
