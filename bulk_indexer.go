@@ -60,8 +60,9 @@ type bulkIndexer struct {
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed    int64
-	FailedDocs []BulkIndexerResponseItem
+	Indexed     int64
+	RetriedDocs int64
+	FailedDocs  []BulkIndexerResponseItem
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -266,6 +267,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	buf := make([]byte, 1024)
 
+	tmp := resp.FailedDocs[:0]
 	for _, res := range resp.FailedDocs {
 		if res.Status == http.StatusTooManyRequests {
 			startlnIdx := res.Position * 2
@@ -309,8 +311,15 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.writer.Write(b.copyBuf[start:end])
 			}
 
+			resp.RetriedDocs++
 			b.itemsAdded++
+		} else {
+			tmp = append(tmp, res)
 		}
+	}
+
+	if len(tmp) != 0 {
+		resp.FailedDocs = tmp
 	}
 
 	return resp, nil
