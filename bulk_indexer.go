@@ -245,6 +245,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 	defer res.Body.Close()
 
+	// Reset the buffer and gzip writer so they can be reused in case 429s
+	// were received.
 	b.resetBuf()
 
 	// Record the number of flushed bytes only when err == nil. The body may
