@@ -227,11 +227,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if cap(b.copyBuf) < b.buf.Len() {
-		b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
-		b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
+	if b.maxDocumentRetry != 0 {
+		if cap(b.copyBuf) < b.buf.Len() {
+			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
+			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
+		}
+		copy(b.copyBuf, b.buf.Bytes())
 	}
-	copy(b.copyBuf, b.buf.Bytes())
 
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
@@ -269,80 +271,82 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
-	buf := make([]byte, 1024)
+	if b.maxDocumentRetry != 0 {
+		buf := make([]byte, 1024)
 
-	for k := range b.retryCounts {
-		found := false
-		for _, res := range resp.FailedDocs {
-			if res.Position == k {
-				found = true
-			}
-		}
-		if !found {
-			delete(b.retryCounts, k)
-		}
-	}
-
-	tmp := resp.FailedDocs[:0]
-	for _, res := range resp.FailedDocs {
-		if res.Status == http.StatusTooManyRequests {
-			startlnIdx := res.Position * 2
-			endlnIdx := startlnIdx + 2
-
-			count := b.retryCounts[res.Position] + 1
-			if count > b.maxDocumentRetry {
-				continue
-			}
-
-			b.retryCounts[b.itemsAdded] = count
-
-			if b.gzipw != nil {
-				gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))
-				if err != nil {
-					return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+		for k := range b.retryCounts {
+			found := false
+			for _, res := range resp.FailedDocs {
+				if res.Position == k {
+					found = true
 				}
-				defer gr.Close()
+			}
+			if !found {
+				delete(b.retryCounts, k)
+			}
+		}
 
-				seen := 0
+		tmp := resp.FailedDocs[:0]
+		for _, res := range resp.FailedDocs {
+			if res.Status == http.StatusTooManyRequests {
+				startlnIdx := res.Position * 2
+				endlnIdx := startlnIdx + 2
 
-				n, _ := gr.Read(buf[:cap(buf)])
-				buf = buf[:n]
-				for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
-					seen += newlines
+				count := b.retryCounts[res.Position] + 1
+				if count > b.maxDocumentRetry {
+					continue
+				}
+
+				b.retryCounts[b.itemsAdded] = count
+
+				if b.gzipw != nil {
+					gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))
+					if err != nil {
+						return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+					}
+					defer gr.Close()
+
+					seen := 0
+
 					n, _ := gr.Read(buf[:cap(buf)])
 					buf = buf[:n]
+					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
+						seen += newlines
+						n, _ := gr.Read(buf[:cap(buf)])
+						buf = buf[:n]
+					}
+
+					start := Indexnth(buf, startlnIdx-seen, '\n') + 1
+					end := Indexnth(buf, endlnIdx-seen, '\n') + 1
+
+					for end == 0 {
+						// Add more capacity (let append pick how much).
+						buf = append(buf, 0)[:len(buf)]
+
+						n, _ := gr.Read(buf[len(buf):cap(buf)])
+						buf = buf[:len(buf)+n]
+
+						end = Indexnth(buf, endlnIdx-seen, '\n') + 1
+					}
+
+					b.writer.Write(buf[start:end])
+				} else {
+					start := Indexnth(b.copyBuf, startlnIdx, '\n') + 1
+					end := Indexnth(b.copyBuf, endlnIdx, '\n') + 1
+
+					b.writer.Write(b.copyBuf[start:end])
 				}
 
-				start := Indexnth(buf, startlnIdx-seen, '\n') + 1
-				end := Indexnth(buf, endlnIdx-seen, '\n') + 1
-
-				for end == 0 {
-					// Add more capacity (let append pick how much).
-					buf = append(buf, 0)[:len(buf)]
-
-					n, _ := gr.Read(buf[len(buf):cap(buf)])
-					buf = buf[:len(buf)+n]
-
-					end = Indexnth(buf, endlnIdx-seen, '\n') + 1
-				}
-
-				b.writer.Write(buf[start:end])
+				resp.RetriedDocs++
+				b.itemsAdded++
 			} else {
-				start := Indexnth(b.copyBuf, startlnIdx, '\n') + 1
-				end := Indexnth(b.copyBuf, endlnIdx, '\n') + 1
-
-				b.writer.Write(b.copyBuf[start:end])
+				tmp = append(tmp, res)
 			}
-
-			resp.RetriedDocs++
-			b.itemsAdded++
-		} else {
-			tmp = append(tmp, res)
 		}
-	}
 
-	if len(tmp) != 0 {
-		resp.FailedDocs = tmp
+		if len(tmp) != 0 {
+			resp.FailedDocs = tmp
+		}
 	}
 
 	return resp, nil
