@@ -627,7 +627,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 				_, result := docappendertest.DecodeBulkRequest(r)
 				switch failedCount.Add(1) {
 				case 1:
-					assert.Len(t, result.Items, 10)
+					require.Len(t, result.Items, 10)
 					for i, item := range result.Items {
 						switch i {
 						case 0, 4, 5, 6, 9:
@@ -639,7 +639,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 					json.NewEncoder(w).Encode(result)
 					return
 				case 2:
-					assert.Len(t, result.Items, 7)
+					require.Len(t, result.Items, 7)
 					assert.Equal(t, "logs-foo-testing0", result.Items[0]["create"].Index)
 					assert.Equal(t, "logs-foo-testing4", result.Items[1]["create"].Index)
 					assert.Equal(t, "logs-foo-testing5", result.Items[2]["create"].Index)
