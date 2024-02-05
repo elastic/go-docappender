@@ -137,10 +137,12 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxRetryDoc int) *bulkIndexer {
-	b := &bulkIndexer{client: client}
-	b.maxDocumentRetry = maxRetryDoc
-	b.retryCounts = make(map[int]int)
+func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *bulkIndexer {
+	b := &bulkIndexer{
+		client:           client,
+		maxDocumentRetry: maxDocRetry,
+		retryCounts:      make(map[int]int),
+	}
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
 		b.writer = b.gzipw
