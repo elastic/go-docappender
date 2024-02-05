@@ -229,7 +229,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.maxDocumentRetry != 0 {
+	if b.maxDocumentRetry > 0 {
 		if cap(b.copyBuf) < b.buf.Len() {
 			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
 			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
