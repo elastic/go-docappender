@@ -303,8 +303,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// Find the document by looking up the newline separators.
 				// First the newline (if exists) before the 'action' then the
 				// newline at the end of the 'document' line.
-				startlnIdx := res.Position * 2
-				endlnIdx := startlnIdx + 2
+				startln := res.Position * 2
+				endln := startln + 2
 
 				// check if we are above the maxDocumentRetry setting
 				count := b.retryCounts[res.Position] + 1
@@ -331,17 +331,17 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					n, _ := gr.Read(buf[:cap(buf)])
 					buf = buf[:n]
 					// loop until we've seen the nth newline
-					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
+					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startln; newlines = bytes.Count(buf, []byte{'\n'}) {
 						seen += newlines
 						n, _ := gr.Read(buf[:cap(buf)])
 						buf = buf[:n]
 					}
 
-					start := Indexnth(buf, startlnIdx-seen, '\n') + 1
-					end := Indexnth(buf, endlnIdx-seen, '\n') + 1
+					startIdx := Indexnth(buf, startln-seen, '\n') + 1
+					endIdx := Indexnth(buf, endln-seen, '\n') + 1
 
 					// If the end newline is not in the buffer read more data
-					for end == 0 {
+					for endIdx == 0 {
 						// Add more capacity (let append pick how much).
 						buf = append(buf, 0)[:len(buf)]
 
@@ -349,15 +349,15 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						buf = buf[:len(buf)+n]
 
 						// try again to find the end newline
-						end = Indexnth(buf, endlnIdx-seen, '\n') + 1
+						endIdx = Indexnth(buf, endln-seen, '\n') + 1
 					}
 
-					b.writer.Write(buf[start:end])
+					b.writer.Write(buf[startIdx:endIdx])
 				} else {
-					start := Indexnth(b.copyBuf, startlnIdx, '\n') + 1
-					end := Indexnth(b.copyBuf, endlnIdx, '\n') + 1
+					startIdx := Indexnth(b.copyBuf, startln, '\n') + 1
+					endIdx := Indexnth(b.copyBuf, endln, '\n') + 1
 
-					b.writer.Write(b.copyBuf[start:end])
+					b.writer.Write(b.copyBuf[startIdx:endIdx])
 				}
 
 				resp.RetriedDocs++
