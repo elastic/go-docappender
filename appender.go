@@ -127,6 +127,14 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		}
 	}
 
+	minFlushBytes := 16 * 1024 // 16kb
+	if cfg.CompressionLevel != 0 && cfg.FlushBytes < minFlushBytes {
+		return nil, fmt.Errorf(
+			"flush bytes config value (%d) is too small and will be ignored with compression enabled. Use at least %d",
+			cfg.FlushBytes, minFlushBytes,
+		)
+	}
+
 	ms, err := newMetrics(cfg)
 	if err != nil {
 		return nil, err
