@@ -281,6 +281,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			for _, res := range resp.FailedDocs {
 				if res.Position == k {
 					found = true
+					break
 				}
 			}
 			if !found {
