@@ -176,18 +176,29 @@ func (a *Appender) Close(ctx context.Context) error {
 	defer a.mu.Unlock()
 	select {
 	case <-a.closed:
+		return a.errgroup.Wait()
 	default:
-		close(a.closed)
-
-		// Cancel ongoing flushes when ctx is cancelled.
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		go func() {
-			defer a.cancelErrgroupContext()
-			<-ctx.Done()
-		}()
 	}
-	return a.errgroup.Wait()
+	close(a.closed)
+
+	// Cancel ongoing flushes when ctx is cancelled.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		defer a.cancelErrgroupContext()
+		<-ctx.Done()
+	}()
+
+	if err := a.errgroup.Wait(); err != nil {
+		return err
+	}
+	close(a.available)
+	for bi := range a.available {
+		if err := a.flush(context.Background(), bi); err != nil {
+			return fmt.Errorf("failed to flush events on close: %w", err)
+		}
+	}
+	return nil
 }
 
 // Stats returns the bulk indexing stats.

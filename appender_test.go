@@ -697,6 +697,53 @@ func TestAppenderRetryLimit(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestAppenderRetryFlushOnClose(t *testing.T) {
+	var failedCount atomic.Int32
+	var done atomic.Bool
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		switch failedCount.Add(1) {
+		case 1:
+			// Fail logs-foo-testing1 to ensure retries are working
+			require.Len(t, result.Items, 2)
+			for i, item := range result.Items {
+				if i == 1 {
+					itemResp := item["create"]
+					itemResp.Status = http.StatusTooManyRequests
+					item["create"] = itemResp
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+			return
+		}
+		require.Len(t, result.Items, 1)
+		assert.Equal(t, "logs-foo-testing1", result.Items[0]["create"].Index)
+		json.NewEncoder(w).Encode(result)
+		done.Store(true)
+	})
+
+	indexer, err := docappender.New(client, docappender.Config{
+		MaxRequests:        10,
+		MaxDocumentRetries: 1,
+		FlushInterval:      100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	addDoc(t, indexer, "logs-foo-testing0")
+	addDoc(t, indexer, "logs-foo-testing1")
+
+	require.Eventually(t, func() bool {
+		return failedCount.Load() == 1
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+	assert.NoError(t, indexer.Close(context.Background()))
+
+	require.Eventually(t, func() bool {
+		return done.Load()
+	}, 2*time.Second, 50*time.Millisecond, "timed out waiting for last flush request to finish")
+}
+
 func TestAppenderRetryDocument(t *testing.T) {
 	testCases := map[string]struct {
 		cfg docappender.Config
