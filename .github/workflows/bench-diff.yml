@@ -35,7 +35,7 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version-file: go.mod
-    # Version: https://github.com/WillAbides/benchdiff-action/releases/tag/v0.3.3
+    # Version: https://github.com/WillAbides/benchdiff-action/releases/tag/v0.3.5
     - uses: WillAbides/benchdiff-action@990b4c50b5420b485bf87e42c9f18234eba76fbc
       id: benchdiff
       with:
