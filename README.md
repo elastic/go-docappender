@@ -89,3 +89,4 @@ To create a new release, use the [new release
 interface](https://github.com/elastic/go-docappender/releases/new), and use
 GitHub's `generate release notes` to get an automatically-generated list of
 changes made since the last release.
+
