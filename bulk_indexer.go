@@ -306,15 +306,17 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				startln := res.Position * 2
 				endln := startln + 2
 
-				// check if we are above the maxDocumentRetry setting
+				// Increment 429 count for the positions found.
 				count := b.retryCounts[res.Position] + 1
+				// check if we are above the maxDocumentRetry setting
 				if count > b.maxDocumentRetry {
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
 				}
 
-				// store retry count
+				// Since some items may have succeeded, counter positions need
+				// to be updated to match the next current buffer position.
 				b.retryCounts[b.itemsAdded] = count
 
 				if b.gzipw != nil {
