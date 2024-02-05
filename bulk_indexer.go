@@ -273,9 +273,12 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
+	// Only run the retry logic if document retries are enabled
 	if b.maxDocumentRetry != 0 {
 		buf := make([]byte, 1024)
 
+		// Eliminate previous retry counts that aren't present in the bulk
+		// request response.
 		for k := range b.retryCounts {
 			found := false
 			for _, res := range resp.FailedDocs {
@@ -285,6 +288,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				}
 			}
 			if !found {
+				// Retried request succeeded, remove from retry counts
 				delete(b.retryCounts, k)
 			}
 		}
@@ -292,15 +296,25 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		tmp := resp.FailedDocs[:0]
 		for _, res := range resp.FailedDocs {
 			if res.Status == http.StatusTooManyRequests {
+				// there are two lines for each document:
+				// - action
+				// - document
+				//
+				// Find the document by looking up the newline separators.
+				// First the newline (if exists) before the 'action' then the
+				// newline at the end of the 'document' line.
 				startlnIdx := res.Position * 2
 				endlnIdx := startlnIdx + 2
 
+				// check if we are above the maxDocumentRetry setting
 				count := b.retryCounts[res.Position] + 1
 				if count > b.maxDocumentRetry {
+					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
 				}
 
+				// store retry count
 				b.retryCounts[b.itemsAdded] = count
 
 				if b.gzipw != nil {
@@ -310,10 +324,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					}
 					defer gr.Close()
 
+					// keep track of the previous newlines
+					// the buffer is being read lazily
 					seen := 0
 
 					n, _ := gr.Read(buf[:cap(buf)])
 					buf = buf[:n]
+					// loop until we've seen the nth newline
 					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startlnIdx; newlines = bytes.Count(buf, []byte{'\n'}) {
 						seen += newlines
 						n, _ := gr.Read(buf[:cap(buf)])
@@ -323,6 +340,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					start := Indexnth(buf, startlnIdx-seen, '\n') + 1
 					end := Indexnth(buf, endlnIdx-seen, '\n') + 1
 
+					// If the end newline is not in the buffer read more data
 					for end == 0 {
 						// Add more capacity (let append pick how much).
 						buf = append(buf, 0)[:len(buf)]
@@ -330,6 +348,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						n, _ := gr.Read(buf[len(buf):cap(buf)])
 						buf = buf[:len(buf)+n]
 
+						// try again to find the end newline
 						end = Indexnth(buf, endlnIdx-seen, '\n') + 1
 					}
 
@@ -344,6 +363,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
+				// If it's not a 429 treat the document as failed
 				tmp = append(tmp, res)
 			}
 		}
