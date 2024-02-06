@@ -274,7 +274,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	// Only run the retry logic if document retries are enabled
-	if b.maxDocumentRetry != 0 {
+	if b.maxDocumentRetry > 0 {
 		buf := make([]byte, 1024)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -370,7 +370,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 		}
 
-		if len(tmp) != 0 {
+		if len(tmp) > 0 {
 			resp.FailedDocs = tmp
 		}
 	}
