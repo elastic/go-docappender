@@ -339,8 +339,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						buf = buf[:n]
 					}
 
-					startIdx := Indexnth(buf, startln-seen, '\n') + 1
-					endIdx := Indexnth(buf, endln-seen, '\n') + 1
+					startIdx := indexnth(buf, startln-seen, '\n') + 1
+					endIdx := indexnth(buf, endln-seen, '\n') + 1
 
 					// If the end newline is not in the buffer read more data
 					for endIdx == 0 {
@@ -351,13 +351,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						buf = buf[:len(buf)+n]
 
 						// try again to find the end newline
-						endIdx = Indexnth(buf, endln-seen, '\n') + 1
+						endIdx = indexnth(buf, endln-seen, '\n') + 1
 					}
 
 					b.writer.Write(buf[startIdx:endIdx])
 				} else {
-					startIdx := Indexnth(b.copyBuf, startln, '\n') + 1
-					endIdx := Indexnth(b.copyBuf, endln, '\n') + 1
+					startIdx := indexnth(b.copyBuf, startln, '\n') + 1
+					endIdx := indexnth(b.copyBuf, endln, '\n') + 1
 
 					b.writer.Write(b.copyBuf[startIdx:endIdx])
 				}
@@ -378,9 +378,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	return resp, nil
 }
 
-// Indexnth returns the index of the nth instance of sep in s.
+// indexnth returns the index of the nth instance of sep in s.
 // It returns -1 if sep is not present in s or nth is 0.
-func Indexnth(s []byte, nth int, sep rune) int {
+func indexnth(s []byte, nth int, sep rune) int {
 	if nth == 0 {
 		return -1
 	}
