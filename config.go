@@ -49,15 +49,14 @@ type Config struct {
 	// default compression level.
 	CompressionLevel int
 
-	// CompressionThreshold holds the compression threshold.
-	// Data is buffered up to CompressionThreshold before being compressed
-	CompressionThreshold int
-
 	// MaxRequests holds the maximum number of bulk index requests to execute concurrently.
 	// The maximum memory usage of Appender is thus approximately MaxRequests*FlushBytes.
 	//
 	// If MaxRequests is less than or equal to zero, the default of 10 will be used.
 	MaxRequests int
+
+	// MaxDocumentRetries holds the maximum number of document retries
+	MaxDocumentRetries int
 
 	// FlushBytes holds the flush threshold in bytes. If Compression is enabled,
 	// The number of documents that can be buffered will be greater.

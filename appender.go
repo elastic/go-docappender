@@ -106,9 +106,6 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	if cfg.DocumentBufferSize <= 0 {
 		cfg.DocumentBufferSize = 1024
 	}
-	if cfg.CompressionThreshold == 0 {
-		cfg.CompressionThreshold = 512 * 1024
-	}
 	if !cfg.Scaling.Disabled {
 		if cfg.Scaling.ScaleDown.Threshold == 0 {
 			cfg.Scaling.ScaleDown.Threshold = 30
@@ -141,7 +138,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.CompressionThreshold)
+		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -179,18 +176,29 @@ func (a *Appender) Close(ctx context.Context) error {
 	defer a.mu.Unlock()
 	select {
 	case <-a.closed:
+		return a.errgroup.Wait()
 	default:
-		close(a.closed)
-
-		// Cancel ongoing flushes when ctx is cancelled.
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		go func() {
-			defer a.cancelErrgroupContext()
-			<-ctx.Done()
-		}()
 	}
-	return a.errgroup.Wait()
+	close(a.closed)
+
+	// Cancel ongoing flushes when ctx is cancelled.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		defer a.cancelErrgroupContext()
+		<-ctx.Done()
+	}()
+
+	if err := a.errgroup.Wait(); err != nil {
+		return err
+	}
+	close(a.available)
+	for bi := range a.available {
+		if err := a.flush(context.Background(), bi); err != nil {
+			return fmt.Errorf("failed to flush events on close: %w", err)
+		}
+	}
+	return nil
 }
 
 // Stats returns the bulk indexing stats.
@@ -336,6 +344,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		failedCount = make(map[BulkIndexerResponseItem]int, len(resp.FailedDocs))
 	}
 	for _, info := range resp.FailedDocs {
+		info.Position = 0 // reset position so that the response item can be used as key in the map
 		if info.Error.Type != "" || info.Status > 201 {
 			docsFailed++
 			if info.Status >= 400 && info.Status < 500 {

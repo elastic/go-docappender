@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -48,24 +49,30 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type bulkIndexer struct {
-	client       *elasticsearch.Client
-	itemsAdded   int
-	bytesFlushed int
-	jsonw        fastjson.Writer
-	writer       io.Writer
-	gzipw        *gzip.Writer
-	buf          bytes.Buffer
+	client           *elasticsearch.Client
+	maxDocumentRetry int
+	itemsAdded       int
+	bytesFlushed     int
+	jsonw            fastjson.Writer
+	writer           io.Writer
+	gzipw            *gzip.Writer
+	copyBuf          []byte
+	buf              bytes.Buffer
+	retryCounts      map[int]int
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed    int64
-	FailedDocs []BulkIndexerResponseItem
+	Indexed     int64
+	RetriedDocs int64
+	FailedDocs  []BulkIndexerResponseItem
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
 type BulkIndexerResponseItem struct {
 	Index  string `json:"_index"`
 	Status int    `json:"status"`
+
+	Position int
 
 	Error struct {
 		Type   string `json:"type"`
@@ -78,6 +85,7 @@ func init() {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 			switch s {
 			case "items":
+				var idx int
 				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
 						var item BulkIndexerResponseItem
@@ -109,6 +117,8 @@ func init() {
 							}
 							return true
 						})
+						item.Position = idx
+						idx++
 						if item.Error.Type != "" || item.Status > 201 {
 							(*((*BulkIndexerResponseStat)(ptr))).FailedDocs = append((*((*BulkIndexerResponseStat)(ptr))).FailedDocs, item)
 						} else {
@@ -127,8 +137,12 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compressThreshold int) *bulkIndexer {
-	b := &bulkIndexer{client: client}
+func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *bulkIndexer {
+	b := &bulkIndexer{
+		client:           client,
+		maxDocumentRetry: maxDocRetry,
+		retryCounts:      make(map[int]int),
+	}
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
 		b.writer = b.gzipw
@@ -140,7 +154,11 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, compress
 
 // BulkIndexer resets b, ready for a new request.
 func (b *bulkIndexer) Reset() {
-	b.itemsAdded, b.bytesFlushed = 0, 0
+	b.bytesFlushed = 0
+}
+
+func (b *bulkIndexer) resetBuf() {
+	b.itemsAdded = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -211,6 +229,14 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
+	if b.maxDocumentRetry > 0 {
+		if cap(b.copyBuf) < b.buf.Len() {
+			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
+			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
+		}
+		copy(b.copyBuf, b.buf.Bytes())
+	}
+
 	req := esapi.BulkRequest{
 		Body:       &b.buf,
 		Header:     make(http.Header),
@@ -223,9 +249,15 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	bytesFlushed := b.buf.Len()
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
+		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
 	}
 	defer res.Body.Close()
+
+	// Reset the buffer and gzip writer so they can be reused in case 429s
+	// were received.
+	b.resetBuf()
+
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
@@ -240,7 +272,126 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
+
+	// Only run the retry logic if document retries are enabled
+	if b.maxDocumentRetry > 0 {
+		buf := make([]byte, 1024)
+
+		// Eliminate previous retry counts that aren't present in the bulk
+		// request response.
+		for k := range b.retryCounts {
+			found := false
+			for _, res := range resp.FailedDocs {
+				if res.Position == k {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Retried request succeeded, remove from retry counts
+				delete(b.retryCounts, k)
+			}
+		}
+
+		tmp := resp.FailedDocs[:0]
+		for _, res := range resp.FailedDocs {
+			if res.Status == http.StatusTooManyRequests {
+				// there are two lines for each document:
+				// - action
+				// - document
+				//
+				// Find the document by looking up the newline separators.
+				// First the newline (if exists) before the 'action' then the
+				// newline at the end of the 'document' line.
+				startln := res.Position * 2
+				endln := startln + 2
+
+				// Increment 429 count for the positions found.
+				count := b.retryCounts[res.Position] + 1
+				// check if we are above the maxDocumentRetry setting
+				if count > b.maxDocumentRetry {
+					// do not retry, return the document as failed
+					tmp = append(tmp, res)
+					continue
+				}
+
+				// Since some items may have succeeded, counter positions need
+				// to be updated to match the next current buffer position.
+				b.retryCounts[b.itemsAdded] = count
+
+				if b.gzipw != nil {
+					gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))
+					if err != nil {
+						return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+					}
+					defer gr.Close()
+
+					// keep track of the previous newlines
+					// the buffer is being read lazily
+					seen := 0
+
+					n, _ := gr.Read(buf[:cap(buf)])
+					buf = buf[:n]
+					// loop until we've seen the nth newline
+					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startln; newlines = bytes.Count(buf, []byte{'\n'}) {
+						seen += newlines
+						n, _ := gr.Read(buf[:cap(buf)])
+						buf = buf[:n]
+					}
+
+					startIdx := indexnth(buf, startln-seen, '\n') + 1
+					endIdx := indexnth(buf, endln-seen, '\n') + 1
+
+					// If the end newline is not in the buffer read more data
+					for endIdx == 0 {
+						// Add more capacity (let append pick how much).
+						buf = append(buf, 0)[:len(buf)]
+
+						n, _ := gr.Read(buf[len(buf):cap(buf)])
+						buf = buf[:len(buf)+n]
+
+						// try again to find the end newline
+						endIdx = indexnth(buf, endln-seen, '\n') + 1
+					}
+
+					b.writer.Write(buf[startIdx:endIdx])
+				} else {
+					startIdx := indexnth(b.copyBuf, startln, '\n') + 1
+					endIdx := indexnth(b.copyBuf, endln, '\n') + 1
+
+					b.writer.Write(b.copyBuf[startIdx:endIdx])
+				}
+
+				resp.RetriedDocs++
+				b.itemsAdded++
+			} else {
+				// If it's not a 429 treat the document as failed
+				tmp = append(tmp, res)
+			}
+		}
+
+		if len(tmp) > 0 {
+			resp.FailedDocs = tmp
+		}
+	}
+
 	return resp, nil
+}
+
+// indexnth returns the index of the nth instance of sep in s.
+// It returns -1 if sep is not present in s or nth is 0.
+func indexnth(s []byte, nth int, sep rune) int {
+	if nth == 0 {
+		return -1
+	}
+
+	count := 0
+	return bytes.IndexFunc(s, func(r rune) bool {
+		if r == sep {
+			count++
+		}
+		return nth == count
+	})
 }
 
 type errorTooManyRequests struct {
