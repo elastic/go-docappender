@@ -193,10 +193,14 @@ func (a *Appender) Close(ctx context.Context) error {
 		return err
 	}
 	close(a.available)
+	var errs []error
 	for bi := range a.available {
 		if err := a.flush(context.Background(), bi); err != nil {
-			return fmt.Errorf("failed to flush events on close: %w", err)
+			errs = append(errs, fmt.Errorf("indexer failed: %w", err))
 		}
+	}
+	if len(errs) != 0 {
+		return fmt.Errorf("failed to flush events on close: %w", errors.Join(errs...))
 	}
 	return nil
 }
