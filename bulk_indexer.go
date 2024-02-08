@@ -357,22 +357,40 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 					// If the end newline is not in the buffer read more data
 					if endIdx == 0 {
+						// keep track of how many newlines we see to avoid
+						// counting over and over from the start
+						seenInBuffer := seen
+						offset := 0
+
 						// loop until we've seen the end newline
-						for seen+newlines < endln {
+						// without discarding what we have in the buffer
+						for seenInBuffer+newlines < endln {
+							offset = len(buf)
+							seenInBuffer += newlines
+
 							// Add more capacity (let append pick how much).
 							buf = append(buf, 0)[:len(buf)]
 
 							n, _ := gr.Read(buf[len(buf):cap(buf)])
 							buf = buf[:len(buf)+n]
 
-							newlines = bytes.Count(buf, []byte{'\n'})
+							newlines = bytes.Count(buf[offset:], []byte{'\n'})
 						}
 
-						// try again to find the end newline
-						endIdx = indexnth(buf, endln-seen, '\n') + 1
+						// try again to find the end newline in the extra data
+						// we just read.
+						endIdx = indexnth(buf[offset:], endln-seenInBuffer, '\n') + 1
+						endIdx += offset
 					}
 
 					b.writer.Write(buf[startIdx:endIdx])
+
+					if endIdx != len(buf) {
+						// the next document will be after the end of the current document
+						// so we can discard everything up to endIdx
+						seen += bytes.Count(buf[:endIdx], []byte{'\n'})
+						buf = buf[endIdx:]
+					}
 				} else {
 					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
 					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
