@@ -275,7 +275,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	// Only run the retry logic if document retries are enabled
 	if b.maxDocumentRetry > 0 {
-		buf := make([]byte, 1024)
+		buf := make([]byte, 1024)[:0]
 
 		// Eliminate previous retry counts that aren't present in the bulk
 		// request response.
@@ -296,6 +296,20 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		tmp := resp.FailedDocs[:0]
 		lastln := 0
 		lastIdx := 0
+		var gr *gzip.Reader
+
+		if b.gzipw != nil {
+			gr, err = gzip.NewReader(bytes.NewReader(b.copyBuf))
+			if err != nil {
+				return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+			}
+			defer gr.Close()
+		}
+
+		// keep track of the previous newlines
+		// the buffer is being read lazily
+		seen := 0
+
 		for _, res := range resp.FailedDocs {
 			if res.Status == http.StatusTooManyRequests {
 				// there are two lines for each document:
@@ -322,35 +336,37 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.retryCounts[b.itemsAdded] = count
 
 				if b.gzipw != nil {
-					gr, err := gzip.NewReader(bytes.NewReader(b.copyBuf))
-					if err != nil {
-						return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+					// First loop, read from the gzip reader
+					if len(buf) == 0 {
+						n, _ := gr.Read(buf[:cap(buf)])
+						buf = buf[:n]
 					}
-					defer gr.Close()
 
-					// keep track of the previous newlines
-					// the buffer is being read lazily
-					seen := 0
+					newlines := bytes.Count(buf, []byte{'\n'})
 
-					n, _ := gr.Read(buf[:cap(buf)])
-					buf = buf[:n]
-					// loop until we've seen the nth newline
-					for newlines := bytes.Count(buf, []byte{'\n'}); seen+newlines < startln; newlines = bytes.Count(buf, []byte{'\n'}) {
+					// loop until we've seen the start newline
+					for seen+newlines < startln {
 						seen += newlines
 						n, _ := gr.Read(buf[:cap(buf)])
 						buf = buf[:n]
+						newlines = bytes.Count(buf, []byte{'\n'})
 					}
 
 					startIdx := indexnth(buf, startln-seen, '\n') + 1
 					endIdx := indexnth(buf, endln-seen, '\n') + 1
 
 					// If the end newline is not in the buffer read more data
-					for endIdx == 0 {
-						// Add more capacity (let append pick how much).
-						buf = append(buf, 0)[:len(buf)]
+					if endIdx == 0 {
+						// loop until we've seen the end newline
+						for seen+newlines < endln {
+							// Add more capacity (let append pick how much).
+							buf = append(buf, 0)[:len(buf)]
 
-						n, _ := gr.Read(buf[len(buf):cap(buf)])
-						buf = buf[:len(buf)+n]
+							n, _ := gr.Read(buf[len(buf):cap(buf)])
+							buf = buf[:len(buf)+n]
+
+							newlines = bytes.Count(buf, []byte{'\n'})
+						}
 
 						// try again to find the end newline
 						endIdx = indexnth(buf, endln-seen, '\n') + 1
