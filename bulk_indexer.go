@@ -294,6 +294,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 
 		tmp := resp.FailedDocs[:0]
+		lastln := 0
+		lastIdx := 0
 		for _, res := range resp.FailedDocs {
 			if res.Status == http.StatusTooManyRequests {
 				// there are two lines for each document:
@@ -356,10 +358,13 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 					b.writer.Write(buf[startIdx:endIdx])
 				} else {
-					startIdx := indexnth(b.copyBuf, startln, '\n') + 1
-					endIdx := indexnth(b.copyBuf, endln, '\n') + 1
+					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
+					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
 
-					b.writer.Write(b.copyBuf[startIdx:endIdx])
+					b.writer.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
+
+					lastln = endln
+					lastIdx += endIdx
 				}
 
 				resp.RetriedDocs++
