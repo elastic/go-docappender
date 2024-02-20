@@ -275,7 +275,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	// Only run the retry logic if document retries are enabled
 	if b.maxDocumentRetry > 0 {
-		buf := make([]byte, 1024)[:0]
+		buf := make([]byte, 0, 1024)
 
 		// Eliminate previous retry counts that aren't present in the bulk
 		// request response.
