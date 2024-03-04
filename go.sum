@@ -47,8 +47,8 @@ github.com/prometheus/procfs v0.7.3 h1:4jVXhlkAyzOScmCkXBTOLRLTz8EeU+eyjrwB/EPq0
 github.com/prometheus/procfs v0.7.3/go.mod h1:cz+aTbrPOrUb4q7XlbU9ygM+/jj0fzG6c1xBZuNvfVA=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
-github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
-github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
+github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
+github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.8 h1:4j3wI1e+WV6u+9ZR7lorkJI2rnJfjOWtkMeZG08PbRI=
 go.elastic.co/apm/module/apmelasticsearch/v2 v2.4.8/go.mod h1:C9ajbSjZ3akTrFOjBr+pMq8bPVOH9vhIG+knZAuPW3s=
 go.elastic.co/apm/module/apmhttp/v2 v2.4.8 h1:C1piLq4wcFHFB7jpFW1WPEyEl6zbRpf9SAY8S8tX7Qk=
