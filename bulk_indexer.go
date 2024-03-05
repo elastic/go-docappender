@@ -375,19 +375,6 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						// If the end newline is in the buffer write the event
 						b.writer.Write(buf[startIdx:endIdx])
 					}
-
-					// the next document will be after the end of the current document
-					// so we can discard everything up to endIdx
-					seen += bytes.Count(buf[:endIdx], []byte{'\n'})
-
-					if endIdx == len(buf) {
-						// we're at the end of the buffer so start from 0
-						buf = buf[:0]
-					} else {
-						// start from endIdx
-						n := copy(buf, buf[endIdx:])
-						buf = buf[:n]
-					}
 				} else {
 					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
 					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
