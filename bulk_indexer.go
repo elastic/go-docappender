@@ -336,12 +336,7 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.retryCounts[b.itemsAdded] = count
 
 				if b.gzipw != nil {
-					// First loop, read from the gzip reader
-					if len(buf) == 0 {
-						n, _ := gr.Read(buf[:cap(buf)])
-						buf = buf[:n]
-					}
-
+					// newlines in the current buf
 					newlines := bytes.Count(buf, []byte{'\n'})
 
 					// loop until we've seen the start newline
@@ -357,39 +352,41 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 					// If the end newline is not in the buffer read more data
 					if endIdx == 0 {
-						// keep track of how many newlines we see to avoid
-						// counting over and over from the start
-						seenInBuffer := seen
-						offset := 0
+						// Write what we have
+						b.writer.Write(buf[startIdx:])
 
 						// loop until we've seen the end newline
-						// without discarding what we have in the buffer
-						for seenInBuffer+newlines < endln {
-							offset = len(buf)
-							seenInBuffer += newlines
-
-							// Add more capacity (let append pick how much).
-							buf = append(buf, 0)[:len(buf)]
-
-							n, _ := gr.Read(buf[len(buf):cap(buf)])
-							buf = buf[:len(buf)+n]
-
-							newlines = bytes.Count(buf[offset:], []byte{'\n'})
+						for seen+newlines < endln {
+							seen += newlines
+							n, _ := gr.Read(buf[:cap(buf)])
+							buf = buf[:n]
+							newlines = bytes.Count(buf, []byte{'\n'})
+							if seen+newlines < endln {
+								// endln is not here, write what we have and keep going
+								b.writer.Write(buf)
+							}
 						}
 
 						// try again to find the end newline in the extra data
 						// we just read.
-						endIdx = indexnth(buf[offset:], endln-seenInBuffer, '\n') + 1
-						endIdx += offset
+						endIdx = indexnth(buf, endln-seen, '\n') + 1
+						b.writer.Write(buf[:endIdx])
+					} else {
+						// If the end newline is in the buffer write the event
+						b.writer.Write(buf[startIdx:endIdx])
 					}
 
-					b.writer.Write(buf[startIdx:endIdx])
+					// the next document will be after the end of the current document
+					// so we can discard everything up to endIdx
+					seen += bytes.Count(buf[:endIdx], []byte{'\n'})
 
-					if endIdx != len(buf) {
-						// the next document will be after the end of the current document
-						// so we can discard everything up to endIdx
-						seen += bytes.Count(buf[:endIdx], []byte{'\n'})
-						buf = buf[endIdx:]
+					if endIdx == len(buf) {
+						// we're at the end of the buffer so start from 0
+						buf = buf[:0]
+					} else {
+						// start from endIdx
+						n := copy(buf, buf[endIdx:])
+						buf = buf[:n]
 					}
 				} else {
 					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
