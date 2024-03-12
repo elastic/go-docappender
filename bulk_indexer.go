@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 	"unsafe"
 
 	"go.elastic.co/fastjson"
@@ -184,6 +185,7 @@ type bulkIndexerItem struct {
 	Index      string
 	DocumentID string
 	Body       io.WriterTo
+	Timestamp  time.Time
 }
 
 // add encodes an item in the buffer.
