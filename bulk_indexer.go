@@ -48,7 +48,7 @@ import (
 // of concurrent bulk requests. This way we can ensure bulk requests have the
 // maximum possible size, based on configuration and throughput.
 
-type bulkIndexer struct {
+type BulkIndexer struct {
 	client           *elasticsearch.Client
 	maxDocumentRetry int
 	itemsAdded       int
@@ -137,8 +137,8 @@ func init() {
 	})
 }
 
-func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *bulkIndexer {
-	b := &bulkIndexer{
+func NewBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *BulkIndexer {
+	b := &BulkIndexer{
 		client:           client,
 		maxDocumentRetry: maxDocRetry,
 		retryCounts:      make(map[int]int),
@@ -153,11 +153,11 @@ func newBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRe
 }
 
 // BulkIndexer resets b, ready for a new request.
-func (b *bulkIndexer) Reset() {
+func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
 }
 
-func (b *bulkIndexer) resetBuf() {
+func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
@@ -166,28 +166,28 @@ func (b *bulkIndexer) resetBuf() {
 }
 
 // Added returns the number of buffered items.
-func (b *bulkIndexer) Items() int {
+func (b *BulkIndexer) Items() int {
 	return b.itemsAdded
 }
 
 // Len returns the number of buffered bytes.
-func (b *bulkIndexer) Len() int {
+func (b *BulkIndexer) Len() int {
 	return b.buf.Len()
 }
 
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
-func (b *bulkIndexer) BytesFlushed() int {
+func (b *BulkIndexer) BytesFlushed() int {
 	return b.bytesFlushed
 }
 
-type bulkIndexerItem struct {
+type BulkIndexerItem struct {
 	Index      string
 	DocumentID string
 	Body       io.WriterTo
 }
 
-// add encodes an item in the buffer.
-func (b *bulkIndexer) add(item bulkIndexerItem) error {
+// Add encodes an item in the buffer.
+func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	b.writeMeta(item.Index, item.DocumentID)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
@@ -199,7 +199,7 @@ func (b *bulkIndexer) add(item bulkIndexerItem) error {
 	return nil
 }
 
-func (b *bulkIndexer) writeMeta(index, documentID string) {
+func (b *BulkIndexer) writeMeta(index, documentID string) {
 	b.jsonw.RawString(`{"create":{`)
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
@@ -218,7 +218,7 @@ func (b *bulkIndexer) writeMeta(index, documentID string) {
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
+func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
 		return BulkIndexerResponseStat{}, nil
 	}
