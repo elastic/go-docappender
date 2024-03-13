@@ -338,7 +338,10 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				if b.gzipw != nil {
 					// First loop, read from the gzip reader
 					if len(buf) == 0 {
-						n, _ := gr.Read(buf[:cap(buf)])
+						n, err := gr.Read(buf[:cap(buf)])
+						if err != nil && err != io.EOF {
+							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
+						}
 						buf = buf[:n]
 					}
 
@@ -348,7 +351,10 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					// loop until we've seen the start newline
 					for seen+newlines < startln {
 						seen += newlines
-						n, _ := gr.Read(buf[:cap(buf)])
+						n, err := gr.Read(buf[:cap(buf)])
+						if err != nil && err != io.EOF {
+							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
+						}
 						buf = buf[:n]
 						newlines = bytes.Count(buf, []byte{'\n'})
 					}
@@ -364,7 +370,10 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						// loop until we've seen the end newline
 						for seen+newlines < endln {
 							seen += newlines
-							n, _ := gr.Read(buf[:cap(buf)])
+							n, err := gr.Read(buf[:cap(buf)])
+							if err != nil && err != io.EOF {
+								return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
+							}
 							buf = buf[:n]
 							newlines = bytes.Count(buf, []byte{'\n'})
 							if seen+newlines < endln {
