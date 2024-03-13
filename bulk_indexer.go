@@ -234,7 +234,8 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
 			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
 		}
-		copy(b.copyBuf, b.buf.Bytes())
+		n := copy(b.copyBuf, b.buf.Bytes())
+		b.copyBuf = b.copyBuf[:n]
 	}
 
 	req := esapi.BulkRequest{
