@@ -336,6 +336,12 @@ func (b *bulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.retryCounts[b.itemsAdded] = count
 
 				if b.gzipw != nil {
+					// First loop, read from the gzip reader
+					if len(buf) == 0 {
+						n, _ := gr.Read(buf[:cap(buf)])
+						buf = buf[:n]
+					}
+
 					// newlines in the current buf
 					newlines := bytes.Count(buf, []byte{'\n'})
 
