@@ -76,8 +76,8 @@ type Appender struct {
 	scalingInfo atomic.Value
 
 	config                Config
-	available             chan *bulkIndexer
-	bulkItems             chan bulkIndexerItem
+	available             chan *BulkIndexer
+	bulkItems             chan BulkIndexerItem
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
 	cancelErrgroupContext context.CancelFunc
@@ -136,9 +136,9 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	if err != nil {
 		return nil, err
 	}
-	available := make(chan *bulkIndexer, cfg.MaxRequests)
+	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
+		available <- NewBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -147,7 +147,7 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		config:    cfg,
 		available: available,
 		closed:    make(chan struct{}),
-		bulkItems: make(chan bulkIndexerItem, cfg.DocumentBufferSize),
+		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
 	indexer.addUpDownCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
@@ -239,10 +239,10 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return errMissingBody
 	}
 
-	// Send the bulkIndexerItem to the internal channel, allowing individual
+	// Send the BulkIndexerItem to the internal channel, allowing individual
 	// documents to be processed by an active bulk indexer in a dedicated
 	// goroutine, improving data locality and minimising lock contention.
-	item := bulkIndexerItem{
+	item := BulkIndexerItem{
 		Index: index,
 		Body:  document,
 	}
@@ -278,7 +278,7 @@ func (a *Appender) addUpDownCount(delta int64, lm *int64, m metric.Int64UpDownCo
 	m.Add(context.Background(), delta, append(opts, attrs)...)
 }
 
-func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
+func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	n := bulkIndexer.Items()
 	if n == 0 {
 		return nil
@@ -310,7 +310,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 
 	resp, err := bulkIndexer.Flush(flushCtx)
 
-	// Record the bulkIndexer buffer's length as the bytesTotal metric after
+	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
 		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
@@ -421,7 +421,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 // rather than due to being full.
 func (a *Appender) runActiveIndexer() {
 	var closed bool
-	var active *bulkIndexer
+	var active *BulkIndexer
 	var timedFlush uint
 	var fullFlush uint
 	flushTimer := time.NewTimer(a.config.FlushInterval)
@@ -429,7 +429,7 @@ func (a *Appender) runActiveIndexer() {
 		<-flushTimer.C
 	}
 	var firstDocTS time.Time
-	handleBulkItem := func(item bulkIndexerItem) {
+	handleBulkItem := func(item BulkIndexerItem) {
 		if active == nil {
 			// NOTE(marclop) Record the TS when the first document is cached.
 			// It doesn't account for the time spent in the buffered channel.
@@ -438,8 +438,8 @@ func (a *Appender) runActiveIndexer() {
 			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
-		if err := active.add(item); err != nil {
-			a.config.Logger.Error("failed to add item to bulk indexer", zap.Error(err))
+		if err := active.Add(item); err != nil {
+			a.config.Logger.Error("failed to Add item to bulk indexer", zap.Error(err))
 		}
 	}
 	for !closed {
