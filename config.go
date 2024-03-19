@@ -104,6 +104,17 @@ type ScalingConfig struct {
 	// It is enabled by default.
 	Disabled bool
 
+	// ActiveRatio defines the threshold for (potential) active indexers to
+	// GOMAXPROCS. The higher the number, the more potential active indexers
+	// there will be actively pulling from the BulkIndexerItem channel.
+	// For example, when ActiveRatio:1 and GOMAXPROCS:2, there can be a max
+	// of 2 active indexers, or 1 per GOMAXPROCS.
+	// If set to 0.5, the maximum number of active indexers is 1, since.
+	// The value must be between 0 and 1.
+	//
+	// It defaults to 0.25 by default.
+	ActiveRatio float64
+
 	// ScaleDown configures the Threshold and CoolDown for the scale down
 	// action. In order to scale down an active indexer, the Threshold has
 	// to be met after the CoolDown has elapsed. Scale down will only take

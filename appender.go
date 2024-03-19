@@ -122,6 +122,9 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 		if cfg.Scaling.IdleInterval <= 0 {
 			cfg.Scaling.IdleInterval = 30 * time.Second
 		}
+		if cfg.Scaling.ActiveRatio <= 0 {
+			cfg.Scaling.ActiveRatio = 0.25
+		}
 	}
 
 	minFlushBytes := 16 * 1024 // 16kb
@@ -551,7 +554,7 @@ func (a *Appender) maybeScaleDown(now time.Time, info scalingInfo, timedFlush *u
 	// Loop until the CompareAndSwap operation succeeds (there may be more than)
 	// since a single active indexer trying to down scale itself, or the active
 	// indexer variable is in check.
-	limit := activeLimit()
+	limit := a.activeLimit()
 	for info.activeIndexers > limit {
 		// Avoid having more than 1 concurrent downscale, by using a compare
 		// and swap operation.
@@ -607,7 +610,7 @@ func (a *Appender) maybeScaleUp(now time.Time, info scalingInfo, fullFlush *uint
 	if *fullFlush < a.config.Scaling.ScaleUp.Threshold {
 		return false
 	}
-	if info.activeIndexers >= activeLimit() {
+	if info.activeIndexers >= a.activeLimit() {
 		return false
 	}
 	// Reset fullFlush after it has exceeded the threshold
@@ -648,15 +651,16 @@ func (a *Appender) tracingEnabled() bool {
 	return a.config.Tracer != nil && a.config.Tracer.Recording()
 }
 
-// activeLimit returns the value of GOMAXPROCS / 4. Which should limit the
-// maximum number of active indexers to 25% of GOMAXPROCS.
+// activeLimit returns the value of GOMAXPROCS * cfg.ActiveRatio. Which limits
+// the maximum number of active indexers to a % of GOMAXPROCS.
 //
 // NOTE: There is also a sweet spot between Config.MaxRequests and the number
 // of available indexers, where having N number of available bulk requests per
 // active bulk indexer is required for optimal performance.
-func activeLimit() int64 {
-	if limit := float64(runtime.GOMAXPROCS(0)) / float64(4); limit > 1 {
-		return int64(math.RoundToEven(limit))
+func (a *Appender) activeLimit() int64 {
+	ar := a.config.Scaling.ActiveRatio
+	if limit := float64(runtime.GOMAXPROCS(0)) * ar; limit > 1 {
+		return int64(math.RoundToEven(limit)) // return when > 1.
 	}
 	return 1
 }
