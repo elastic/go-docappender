@@ -19,7 +19,6 @@ package docappender
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -28,6 +27,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
 	"github.com/elastic/go-elasticsearch/v8"
