@@ -350,26 +350,22 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if len(resp.FailedDocs) > 0 {
 		failedCount = make(map[BulkIndexerResponseItem]int, len(resp.FailedDocs))
 	}
+	docsFailed = int64(len(resp.FailedDocs))
 	for _, info := range resp.FailedDocs {
+		if info.Status >= 400 && info.Status < 500 {
+			if info.Status == http.StatusTooManyRequests {
+				tooManyRequests++
+			} else {
+				clientFailed++
+			}
+		}
+		if info.Status >= 500 {
+			serverFailed++
+		}
 		info.Position = 0 // reset position so that the response item can be used as key in the map
-		if info.Error.Type != "" || info.Status > 201 {
-			docsFailed++
-			if info.Status >= 400 && info.Status < 500 {
-				if info.Status == http.StatusTooManyRequests {
-					tooManyRequests++
-				} else {
-					clientFailed++
-				}
-			}
-			if info.Status >= 500 {
-				serverFailed++
-			}
-			failedCount[info]++
-			if a.tracingEnabled() {
-				apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
-			}
-		} else {
-			docsIndexed++
+		failedCount[info]++
+		if a.tracingEnabled() {
+			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
 		}
 	}
 	for key, count := range failedCount {
