@@ -29,7 +29,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
@@ -87,7 +86,7 @@ type Appender struct {
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
-func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
+func New(client Transport, cfg Config) (*Appender, error) {
 	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
 		return nil, fmt.Errorf(
 			"expected CompressionLevel in range [-1,9], got %d",
