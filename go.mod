@@ -3,13 +3,13 @@ module github.com/elastic/go-docappender
 go 1.21
 
 require (
-	github.com/elastic/go-elasticsearch/v8 v8.13.0
+	github.com/elastic/go-elasticsearch/v8 v8.13.1
 	github.com/json-iterator/go v1.1.12
-	github.com/klauspost/compress v1.17.7
+	github.com/klauspost/compress v1.17.8
 	github.com/stretchr/testify v1.9.0
-	go.elastic.co/apm/module/apmelasticsearch/v2 v2.5.0
-	go.elastic.co/apm/module/apmzap/v2 v2.5.0
-	go.elastic.co/apm/v2 v2.5.0
+	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.0
+	go.elastic.co/apm/module/apmzap/v2 v2.6.0
+	go.elastic.co/apm/v2 v2.6.0
 	go.elastic.co/fastjson v1.3.0
 	go.opentelemetry.io/otel v1.25.0
 	go.opentelemetry.io/otel/metric v1.25.0
@@ -33,7 +33,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	go.elastic.co/apm/module/apmhttp/v2 v2.5.0 // indirect
+	go.elastic.co/apm/module/apmhttp/v2 v2.6.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.25.0 // indirect
 	go.opentelemetry.io/otel/trace v1.25.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
