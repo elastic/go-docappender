@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,7 +52,7 @@ func (r *Response) String() string {
 			out.WriteString(fmt.Sprintf("<error reading response body: %v>", err))
 			return out.String()
 		}
-		defer func() { r.Body = ioutil.NopCloser(b1) }()
+		defer func() { r.Body = io.NopCloser(b1) }()
 	}
 
 	if r != nil {
