@@ -30,7 +30,7 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/go-docappender/esapi"
 	jsoniter "github.com/json-iterator/go"
 )
 
