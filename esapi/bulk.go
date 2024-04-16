@@ -39,18 +39,16 @@ type BulkRequest struct {
 
 	Body io.Reader
 
-	ListExecutedPipelines *bool
-	Pipeline              string
-	Refresh               string
-	RequireAlias          *bool
-	RequireDataStream     *bool
-	Routing               string
-	Source                []string
-	SourceExcludes        []string
-	SourceIncludes        []string
-	Timeout               time.Duration
-	DocumentType          string
-	WaitForActiveShards   string
+	Pipeline            string
+	Refresh             string
+	RequireAlias        *bool
+	Routing             string
+	Source              []string
+	SourceExcludes      []string
+	SourceIncludes      []string
+	Timeout             time.Duration
+	DocumentType        string
+	WaitForActiveShards string
 
 	Pretty     bool
 	Human      bool
@@ -83,10 +81,6 @@ func (r BulkRequest) Do(ctx context.Context, transport Transport) (*Response, er
 
 	params = make(map[string]string)
 
-	if r.ListExecutedPipelines != nil {
-		params["list_executed_pipelines"] = strconv.FormatBool(*r.ListExecutedPipelines)
-	}
-
 	if r.Pipeline != "" {
 		params["pipeline"] = r.Pipeline
 	}
@@ -97,10 +91,6 @@ func (r BulkRequest) Do(ctx context.Context, transport Transport) (*Response, er
 
 	if r.RequireAlias != nil {
 		params["require_alias"] = strconv.FormatBool(*r.RequireAlias)
-	}
-
-	if r.RequireDataStream != nil {
-		params["require_data_stream"] = strconv.FormatBool(*r.RequireDataStream)
 	}
 
 	if r.Routing != "" {
@@ -208,13 +198,6 @@ func (f Bulk) WithIndex(v string) func(*BulkRequest) {
 	}
 }
 
-// WithListExecutedPipelines - sets list_executed_pipelines for all incoming documents. defaults to unset (false).
-func (f Bulk) WithListExecutedPipelines(v bool) func(*BulkRequest) {
-	return func(r *BulkRequest) {
-		r.ListExecutedPipelines = &v
-	}
-}
-
 // WithPipeline - the pipeline ID to preprocess incoming documents with.
 func (f Bulk) WithPipeline(v string) func(*BulkRequest) {
 	return func(r *BulkRequest) {
@@ -233,13 +216,6 @@ func (f Bulk) WithRefresh(v string) func(*BulkRequest) {
 func (f Bulk) WithRequireAlias(v bool) func(*BulkRequest) {
 	return func(r *BulkRequest) {
 		r.RequireAlias = &v
-	}
-}
-
-// WithRequireDataStream - when true, requires the destination to be a data stream (existing or to-be-created). default is false.
-func (f Bulk) WithRequireDataStream(v bool) func(*BulkRequest) {
-	return func(r *BulkRequest) {
-		r.RequireDataStream = &v
 	}
 }
 
@@ -275,13 +251,6 @@ func (f Bulk) WithSourceIncludes(v ...string) func(*BulkRequest) {
 func (f Bulk) WithTimeout(v time.Duration) func(*BulkRequest) {
 	return func(r *BulkRequest) {
 		r.Timeout = v
-	}
-}
-
-// WithDocumentType - default document type for items which don't provide one.
-func (f Bulk) WithDocumentType(v string) func(*BulkRequest) {
-	return func(r *BulkRequest) {
-		r.DocumentType = v
 	}
 }
 
