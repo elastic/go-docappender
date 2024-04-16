@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Package esapi contains a stripped down version of https://github.com/elastic/go-elasticsearch/tree/main/esapi
+// which exists to maintain compatibility with v7 and v8 clients for go-docappender usage.
 package esapi
 
 import (
