@@ -80,6 +80,11 @@ type Config struct {
 	// If DocumentBufferSize is zero, the default 1024 will be used.
 	DocumentBufferSize int
 
+	// Pipeline holds the ingest pipeline ID.
+	//
+	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
+	Pipeline string
+
 	// Scaling configuration for the docappender.
 	//
 	// If unspecified, scaling is enabled by default.

@@ -48,17 +48,34 @@ import (
 // of concurrent bulk requests. This way we can ensure bulk requests have the
 // maximum possible size, based on configuration and throughput.
 
+// BulkIndexerConfig holds configuration for BulkIndexer.
+type BulkIndexerConfig struct {
+	// MaxDocumentRetries holds the maximum number of document retries
+	MaxDocumentRetry int
+
+	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
+	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
+	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
+	// default compression level.
+	CompressionLevel int
+
+	// Pipeline holds the ingest pipeline ID.
+	//
+	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
+	Pipeline string
+}
+
 type BulkIndexer struct {
-	client           *elasticsearch.Client
-	maxDocumentRetry int
-	itemsAdded       int
-	bytesFlushed     int
-	jsonw            fastjson.Writer
-	writer           io.Writer
-	gzipw            *gzip.Writer
-	copyBuf          []byte
-	buf              bytes.Buffer
-	retryCounts      map[int]int
+	client       *elasticsearch.Client
+	config       BulkIndexerConfig
+	itemsAdded   int
+	bytesFlushed int
+	jsonw        fastjson.Writer
+	writer       io.Writer
+	gzipw        *gzip.Writer
+	copyBuf      []byte
+	buf          bytes.Buffer
+	retryCounts  map[int]int
 }
 
 type BulkIndexerResponseStat struct {
@@ -137,14 +154,14 @@ func init() {
 	})
 }
 
-func NewBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *BulkIndexer {
+func NewBulkIndexer(client *elasticsearch.Client, cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
-		client:           client,
-		maxDocumentRetry: maxDocRetry,
-		retryCounts:      make(map[int]int),
+		client:      client,
+		config:      cfg,
+		retryCounts: make(map[int]int),
 	}
-	if compressionLevel != gzip.NoCompression {
-		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
+	if cfg.CompressionLevel != gzip.NoCompression {
+		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
 		b.writer = b.gzipw
 	} else {
 		b.writer = &b.buf
@@ -229,7 +246,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.maxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetry > 0 {
 		if cap(b.copyBuf) < b.buf.Len() {
 			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
 			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
@@ -242,6 +259,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		Body:       &b.buf,
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
+		Pipeline:   b.config.Pipeline,
 	}
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
@@ -275,7 +293,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	// Only run the retry logic if document retries are enabled
-	if b.maxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetry > 0 {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -326,7 +344,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// Increment 429 count for the positions found.
 				count := b.retryCounts[res.Position] + 1
 				// check if we are above the maxDocumentRetry setting
-				if count > b.maxDocumentRetry {
+				if count > b.config.MaxDocumentRetry {
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
