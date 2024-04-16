@@ -87,7 +87,7 @@ type Appender struct {
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
-// While it takes any client implementing the Transport interface, it is only tested with v8 go-elasticsearch client.
+// It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
 		return nil, fmt.Errorf(
