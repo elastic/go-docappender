@@ -142,7 +142,8 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- NewBulkIndexer(client, BulkIndexerConfig{
+		available <- NewBulkIndexer(BulkIndexerConfig{
+			client:           client,
 			MaxDocumentRetry: cfg.MaxDocumentRetries,
 			CompressionLevel: cfg.CompressionLevel,
 			Pipeline:         cfg.Pipeline,

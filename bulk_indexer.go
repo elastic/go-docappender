@@ -49,6 +49,9 @@ import (
 
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
+	// client holds the Elasticsearch client.
+	client esapi.Transport
+
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetry int
 
@@ -65,7 +68,6 @@ type BulkIndexerConfig struct {
 }
 
 type BulkIndexer struct {
-	client       esapi.Transport
 	config       BulkIndexerConfig
 	itemsAdded   int
 	bytesFlushed int
@@ -155,9 +157,8 @@ func init() {
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func NewBulkIndexer(client esapi.Transport, cfg BulkIndexerConfig) *BulkIndexer {
+func NewBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
-		client:      client,
 		config:      cfg,
 		retryCounts: make(map[int]int),
 	}
@@ -267,7 +268,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
-	res, err := req.Do(ctx, b.client)
+	res, err := req.Do(ctx, b.config.client)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
