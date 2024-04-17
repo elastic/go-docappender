@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package docappender_test
+package integrationtest_test
 
 import (
 	"bytes"
