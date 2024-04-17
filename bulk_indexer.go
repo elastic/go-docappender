@@ -137,7 +137,7 @@ func init() {
 }
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
-// It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
+// It is only tested with v7 and v8 go-elasticsearch clients. Use other clients at your own risk.
 func NewBulkIndexer(client esapi.Transport, compressionLevel int, maxDocRetry int) *BulkIndexer {
 	b := &BulkIndexer{
 		client:           client,
