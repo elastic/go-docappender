@@ -30,7 +30,6 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
-	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	jsoniter "github.com/json-iterator/go"
 )
@@ -49,7 +48,7 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type BulkIndexer struct {
-	client           *elasticsearch.Client
+	client           esapi.Transport
 	maxDocumentRetry int
 	itemsAdded       int
 	bytesFlushed     int
@@ -137,7 +136,9 @@ func init() {
 	})
 }
 
-func NewBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *BulkIndexer {
+// NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
+// It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
+func NewBulkIndexer(client esapi.Transport, compressionLevel int, maxDocRetry int) *BulkIndexer {
 	b := &BulkIndexer{
 		client:           client,
 		maxDocumentRetry: maxDocRetry,
