@@ -46,8 +46,8 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/elastic/go-docappender"
-	"github.com/elastic/go-docappender/docappendertest"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
@@ -1036,6 +1036,36 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		BytesTotal:            bytesTotal,
 		AvailableBulkRequests: 10,
 		IndexersActive:        0}, indexer.Stats())
+}
+
+func TestAppenderPipeline(t *testing.T) {
+	const expected = "my_pipeline"
+	var actual string
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		actual = r.URL.Query().Get("pipeline")
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval: time.Minute,
+		Pipeline:      expected,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	err = indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+		"@timestamp":            time.Unix(123, 456789111).UTC().Format(docappendertest.TimestampFormat),
+		"data_stream.type":      "logs",
+		"data_stream.dataset":   "foo",
+		"data_stream.namespace": "testing",
+	}))
+	require.NoError(t, err)
+
+	// Closing the indexer flushes enqueued documents.
+	err = indexer.Close(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, expected, actual)
 }
 
 func TestAppenderScaling(t *testing.T) {
