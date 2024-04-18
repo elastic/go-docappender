@@ -20,6 +20,7 @@ package docappender
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -157,7 +158,18 @@ func init() {
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func NewBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
+func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
+	if cfg.client == nil {
+		return nil, errors.New("client is nil")
+	}
+
+	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
+		return nil, fmt.Errorf(
+			"expected CompressionLevel in range [-1,9], got %d",
+			cfg.CompressionLevel,
+		)
+	}
+
 	b := &BulkIndexer{
 		config:      cfg,
 		retryCounts: make(map[int]int),
@@ -168,10 +180,10 @@ func NewBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	} else {
 		b.writer = &b.buf
 	}
-	return b
+	return b, nil
 }
 
-// BulkIndexer resets b, ready for a new request.
+// Reset resets bulk indexer, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
 }
@@ -184,7 +196,7 @@ func (b *BulkIndexer) resetBuf() {
 	}
 }
 
-// Added returns the number of buffered items.
+// Items returns the number of buffered items.
 func (b *BulkIndexer) Items() int {
 	return b.itemsAdded
 }
