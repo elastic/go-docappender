@@ -147,10 +147,10 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
 		bi, err := NewBulkIndexer(BulkIndexerConfig{
-			client:           client,
-			MaxDocumentRetry: cfg.MaxDocumentRetries,
-			CompressionLevel: cfg.CompressionLevel,
-			Pipeline:         cfg.Pipeline,
+			client:             client,
+			MaxDocumentRetries: cfg.MaxDocumentRetries,
+			CompressionLevel:   cfg.CompressionLevel,
+			Pipeline:           cfg.Pipeline,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error creating bulk indexer: %w", err)

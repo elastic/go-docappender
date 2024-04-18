@@ -54,7 +54,7 @@ type BulkIndexerConfig struct {
 	client esapi.Transport
 
 	// MaxDocumentRetries holds the maximum number of document retries
-	MaxDocumentRetry int
+	MaxDocumentRetries int
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
 	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
@@ -260,7 +260,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetries > 0 {
 		if cap(b.copyBuf) < b.buf.Len() {
 			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
 			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
@@ -307,7 +307,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	// Only run the retry logic if document retries are enabled
-	if b.config.MaxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetries > 0 {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -358,7 +358,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// Increment 429 count for the positions found.
 				count := b.retryCounts[res.Position] + 1
 				// check if we are above the maxDocumentRetry setting
-				if count > b.config.MaxDocumentRetry {
+				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
