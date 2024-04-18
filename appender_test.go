@@ -843,7 +843,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 			assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
-				case "elasticsearch.indexer.retried":
+				case "elasticsearch.events.retried":
 					assertCounter(m, 5, *attribute.EmptySet())
 				}
 			})
@@ -861,7 +861,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 			assertCounter = docappendertest.NewAssertCounter(t, &asserted)
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
-				case "elasticsearch.indexer.retried":
+				case "elasticsearch.events.retried":
 					assertCounter(m, 5, *attribute.EmptySet())
 				}
 			})

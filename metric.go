@@ -105,6 +105,11 @@ func newMetrics(cfg Config) (metrics, error) {
 			p:           &ms.docsIndexed,
 		},
 		{
+			name:        "elasticsearch.events.retried",
+			description: "The number of document retries.",
+			p:           &ms.docsRetried,
+		},
+		{
 			name:        "elasticsearch.flushed.bytes",
 			description: "The total number of bytes written to the request body",
 			unit:        "by",
@@ -114,11 +119,6 @@ func newMetrics(cfg Config) (metrics, error) {
 			name:        "elasticsearch.indexer.created",
 			description: "The number of active indexer creations.",
 			p:           &ms.activeCreated,
-		},
-		{
-			name:        "elasticsearch.indexer.retried",
-			description: "The number of document retries.",
-			p:           &ms.docsRetried,
 		},
 		{
 			name:        "elasticsearch.indexer.destroyed",
