@@ -1,4 +1,4 @@
-module github.com/elastic/go-docappender
+module github.com/elastic/go-docappender/v2
 
 go 1.21
 

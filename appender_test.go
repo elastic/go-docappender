@@ -46,8 +46,8 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/elastic/go-docappender"
-	"github.com/elastic/go-docappender/docappendertest"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 

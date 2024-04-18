@@ -33,8 +33,8 @@ import (
 	"go.elastic.co/fastjson"
 	"go.uber.org/zap"
 
-	"github.com/elastic/go-docappender"
-	"github.com/elastic/go-docappender/docappendertest"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 )
 
 func BenchmarkAppender(b *testing.B) {

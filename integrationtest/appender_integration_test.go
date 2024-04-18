@@ -29,8 +29,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/go-docappender"
-	"github.com/elastic/go-docappender/docappendertest"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 	elasticsearch7 "github.com/elastic/go-elasticsearch/v7"
 	esapi7 "github.com/elastic/go-elasticsearch/v7/esapi"
 	elasticsearch8 "github.com/elastic/go-elasticsearch/v8"
