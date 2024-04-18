@@ -377,6 +377,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if docsFailed > 0 {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
 	}
+	if resp.RetriedDocs > 0 {
+		a.addCount(resp.RetriedDocs,
+			nil,
+			a.metrics.docsRetried,
+		)
+	}
 	if docsIndexed > 0 {
 		a.addCount(docsIndexed,
 			&a.docsIndexed,

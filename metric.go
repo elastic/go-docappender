@@ -32,6 +32,7 @@ type metrics struct {
 	docsAdded             metric.Int64Counter
 	docsActive            metric.Int64UpDownCounter
 	docsIndexed           metric.Int64Counter
+	docsRetried           metric.Int64Counter
 	bytesTotal            metric.Int64Counter
 	availableBulkRequests metric.Int64UpDownCounter
 	activeCreated         metric.Int64Counter
@@ -113,6 +114,11 @@ func newMetrics(cfg Config) (metrics, error) {
 			name:        "elasticsearch.indexer.created",
 			description: "The number of active indexer creations.",
 			p:           &ms.activeCreated,
+		},
+		{
+			name:        "elasticsearch.indexer.retried",
+			description: "The number of document retries.",
+			p:           &ms.docsRetried,
 		},
 		{
 			name:        "elasticsearch.indexer.destroyed",
