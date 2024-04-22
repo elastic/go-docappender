@@ -274,9 +274,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	if b.config.MaxDocumentRetries > 0 {
 		if cap(b.copyBuf) < b.buf.Len() {
-			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
-			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
+			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-len(b.copyBuf))
 		}
+		b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
 		n := copy(b.copyBuf, b.buf.Bytes())
 		b.copyBuf = b.copyBuf[:n]
 	}
