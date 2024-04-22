@@ -178,7 +178,7 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		retryCounts: make(map[int]int),
 	}
 
-	// Use a len check instead of nil check because document level retries
+	// use a len check instead of a nil check because document level retries
 	// should be disabled using MaxDocumentRetries instead.
 	if len(b.config.RetryOnDocumentStatus) == 0 {
 		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}

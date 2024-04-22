@@ -851,12 +851,12 @@ func TestAppenderRetryDocument(t *testing.T) {
 func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 	testCases := map[string]struct {
 		status                int
-		expectedDocsInRequest []int // At index i stores the number of documents in the i-th request
+		expectedDocsInRequest []int // at index i stores the number of documents in the i-th request
 		cfg                   docappender.Config
 	}{
 		"should retry": {
 			status:                500,
-			expectedDocsInRequest: []int{1, 2, 1},
+			expectedDocsInRequest: []int{1, 2, 1}, // 3rd request is triggered by indexer close
 			cfg: docappender.Config{
 				MaxRequests:           1,
 				MaxDocumentRetries:    1,
