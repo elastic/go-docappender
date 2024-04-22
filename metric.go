@@ -106,7 +106,7 @@ func newMetrics(cfg Config) (metrics, error) {
 		},
 		{
 			name:        "elasticsearch.events.retried",
-			description: "The number of document retries.",
+			description: "The number of document retries. A single document may be retried more than once.",
 			p:           &ms.docsRetried,
 		},
 		{
