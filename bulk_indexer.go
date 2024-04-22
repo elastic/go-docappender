@@ -57,6 +57,8 @@ type BulkIndexerConfig struct {
 	MaxDocumentRetries int
 
 	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	//
+	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
 	RetryOnDocumentStatus []int
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
