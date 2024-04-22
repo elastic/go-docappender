@@ -58,6 +58,9 @@ type Config struct {
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
 
+	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	RetryOnDocumentStatus []int
+
 	// FlushBytes holds the flush threshold in bytes. If Compression is enabled,
 	// The number of documents that can be buffered will be greater.
 	//
