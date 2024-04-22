@@ -173,14 +173,17 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		)
 	}
 
-	if cfg.RetryOnDocumentStatus == nil {
-		cfg.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
-	}
-
 	b := &BulkIndexer{
 		config:      cfg,
 		retryCounts: make(map[int]int),
 	}
+
+	// Use a len check instead of nil check because document level retries
+	// should be disabled using MaxDocumentRetries instead.
+	if len(b.config.RetryOnDocumentStatus) == 0 {
+		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
+	}
+
 	if cfg.CompressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
 		b.writer = b.gzipw
