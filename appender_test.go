@@ -766,6 +766,13 @@ func TestAppenderRetryDocument(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
+			rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+				func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+					return metricdata.DeltaTemporality
+				},
+			))
+			var rm metricdata.ResourceMetrics
+
 			var failedCount atomic.Int32
 			var done atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -816,6 +823,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 				done.Store(true)
 			})
 
+			tc.cfg.MeterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr))
 			indexer, err := docappender.New(client, tc.cfg)
 			require.NoError(t, err)
 			defer indexer.Close(context.Background())
@@ -829,12 +837,35 @@ func TestAppenderRetryDocument(t *testing.T) {
 				return failedCount.Load() == 1
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
 
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+			var asserted atomic.Int64
+			assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+				switch m.Name {
+				case "elasticsearch.events.retried":
+					assertCounter(m, 5, *attribute.EmptySet())
+				}
+			})
+			assert.Equal(t, int64(1), asserted.Load())
+
 			addMinimalDoc(t, indexer, "logs-foo-testing10")
 			addMinimalDoc(t, indexer, "logs-foo-testing11")
 
 			require.Eventually(t, func() bool {
 				return failedCount.Load() == 2
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+			assertCounter = docappendertest.NewAssertCounter(t, &asserted)
+			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+				switch m.Name {
+				case "elasticsearch.events.retried":
+					assertCounter(m, 5, *attribute.EmptySet())
+				}
+			})
+			assert.Equal(t, int64(2), asserted.Load())
 
 			addMinimalDoc(t, indexer, "logs-foo-testing12")
 

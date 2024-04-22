@@ -32,6 +32,7 @@ type metrics struct {
 	docsAdded             metric.Int64Counter
 	docsActive            metric.Int64UpDownCounter
 	docsIndexed           metric.Int64Counter
+	docsRetried           metric.Int64Counter
 	bytesTotal            metric.Int64Counter
 	availableBulkRequests metric.Int64UpDownCounter
 	activeCreated         metric.Int64Counter
@@ -102,6 +103,11 @@ func newMetrics(cfg Config) (metrics, error) {
 			name:        "elasticsearch.events.processed",
 			description: "Number of APM Events flushed to Elasticsearch. Attributes are used to report separate counts for different outcomes - success, client failure, etc.",
 			p:           &ms.docsIndexed,
+		},
+		{
+			name:        "elasticsearch.events.retried",
+			description: "The number of document retries. A single document may be retried more than once.",
+			p:           &ms.docsRetried,
 		},
 		{
 			name:        "elasticsearch.flushed.bytes",
