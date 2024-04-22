@@ -89,6 +89,10 @@ type Appender struct {
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 func New(client esapi.Transport, cfg Config) (*Appender, error) {
+	if client == nil {
+		return nil, errors.New("client is nil")
+	}
+
 	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
 		return nil, fmt.Errorf(
 			"expected CompressionLevel in range [-1,9], got %d",
@@ -142,7 +146,17 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- NewBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
+		bi, err := NewBulkIndexer(BulkIndexerConfig{
+			Client:                client,
+			MaxDocumentRetries:    cfg.MaxDocumentRetries,
+			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
+			CompressionLevel:      cfg.CompressionLevel,
+			Pipeline:              cfg.Pipeline,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
+		}
+		available <- bi
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()

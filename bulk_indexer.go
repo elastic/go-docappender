@@ -20,6 +20,7 @@ package docappender
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,17 +48,41 @@ import (
 // of concurrent bulk requests. This way we can ensure bulk requests have the
 // maximum possible size, based on configuration and throughput.
 
+// BulkIndexerConfig holds configuration for BulkIndexer.
+type BulkIndexerConfig struct {
+	// Client holds the Elasticsearch client.
+	Client esapi.Transport
+
+	// MaxDocumentRetries holds the maximum number of document retries
+	MaxDocumentRetries int
+
+	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	//
+	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
+	RetryOnDocumentStatus []int
+
+	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
+	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
+	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
+	// default compression level.
+	CompressionLevel int
+
+	// Pipeline holds the ingest pipeline ID.
+	//
+	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
+	Pipeline string
+}
+
 type BulkIndexer struct {
-	client           esapi.Transport
-	maxDocumentRetry int
-	itemsAdded       int
-	bytesFlushed     int
-	jsonw            fastjson.Writer
-	writer           io.Writer
-	gzipw            *gzip.Writer
-	copyBuf          []byte
-	buf              bytes.Buffer
-	retryCounts      map[int]int
+	config       BulkIndexerConfig
+	itemsAdded   int
+	bytesFlushed int
+	jsonw        fastjson.Writer
+	writer       io.Writer
+	gzipw        *gzip.Writer
+	copyBuf      []byte
+	buf          bytes.Buffer
+	retryCounts  map[int]int
 }
 
 type BulkIndexerResponseStat struct {
@@ -138,22 +163,39 @@ func init() {
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func NewBulkIndexer(client esapi.Transport, compressionLevel int, maxDocRetry int) *BulkIndexer {
-	b := &BulkIndexer{
-		client:           client,
-		maxDocumentRetry: maxDocRetry,
-		retryCounts:      make(map[int]int),
+func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
+	if cfg.Client == nil {
+		return nil, errors.New("client is nil")
 	}
-	if compressionLevel != gzip.NoCompression {
-		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
+
+	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
+		return nil, fmt.Errorf(
+			"expected CompressionLevel in range [-1,9], got %d",
+			cfg.CompressionLevel,
+		)
+	}
+
+	b := &BulkIndexer{
+		config:      cfg,
+		retryCounts: make(map[int]int),
+	}
+
+	// use a len check instead of a nil check because document level retries
+	// should be disabled using MaxDocumentRetries instead.
+	if len(b.config.RetryOnDocumentStatus) == 0 {
+		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
+	}
+
+	if cfg.CompressionLevel != gzip.NoCompression {
+		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
 		b.writer = b.gzipw
 	} else {
 		b.writer = &b.buf
 	}
-	return b
+	return b, nil
 }
 
-// BulkIndexer resets b, ready for a new request.
+// Reset resets bulk indexer, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
 }
@@ -166,7 +208,7 @@ func (b *BulkIndexer) resetBuf() {
 	}
 }
 
-// Added returns the number of buffered items.
+// Items returns the number of buffered items.
 func (b *BulkIndexer) Items() int {
 	return b.itemsAdded
 }
@@ -230,7 +272,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.maxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetries > 0 {
 		if cap(b.copyBuf) < b.buf.Len() {
 			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-cap(b.copyBuf))
 			b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
@@ -243,21 +285,22 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		Body:       &b.buf,
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
+		Pipeline:   b.config.Pipeline,
 	}
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
 	bytesFlushed := b.buf.Len()
-	res, err := req.Do(ctx, b.client)
+	res, err := req.Do(ctx, b.config.Client)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
 	}
 	defer res.Body.Close()
 
-	// Reset the buffer and gzip writer so they can be reused in case 429s
-	// were received.
+	// Reset the buffer and gzip writer so they can be reused in case
+	// document level retries are needed.
 	b.resetBuf()
 
 	// Record the number of flushed bytes only when err == nil. The body may
@@ -276,7 +319,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	// Only run the retry logic if document retries are enabled
-	if b.maxDocumentRetry > 0 {
+	if b.config.MaxDocumentRetries > 0 {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -313,7 +356,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		seen := 0
 
 		for _, res := range resp.FailedDocs {
-			if res.Status == http.StatusTooManyRequests {
+			if b.shouldRetryOnStatus(res.Status) {
 				// there are two lines for each document:
 				// - action
 				// - document
@@ -324,10 +367,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				startln := res.Position * 2
 				endln := startln + 2
 
-				// Increment 429 count for the positions found.
+				// Increment retry count for the positions found.
 				count := b.retryCounts[res.Position] + 1
 				// check if we are above the maxDocumentRetry setting
-				if count > b.maxDocumentRetry {
+				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
@@ -405,7 +448,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
-				// If it's not a 429 treat the document as failed
+				// If it's not a retriable error, treat the document as failed
 				tmp = append(tmp, res)
 			}
 		}
@@ -416,6 +459,15 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	return resp, nil
+}
+
+func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
+	for _, status := range b.config.RetryOnDocumentStatus {
+		if docStatus == status {
+			return true
+		}
+	}
+	return false
 }
 
 // indexnth returns the index of the nth instance of sep in s.

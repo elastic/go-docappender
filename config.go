@@ -58,6 +58,11 @@ type Config struct {
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
 
+	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	//
+	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
+	RetryOnDocumentStatus []int
+
 	// FlushBytes holds the flush threshold in bytes. If Compression is enabled,
 	// The number of documents that can be buffered will be greater.
 	//
@@ -79,6 +84,11 @@ type Config struct {
 	//
 	// If DocumentBufferSize is zero, the default 1024 will be used.
 	DocumentBufferSize int
+
+	// Pipeline holds the ingest pipeline ID.
+	//
+	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
+	Pipeline string
 
 	// Scaling configuration for the docappender.
 	//
