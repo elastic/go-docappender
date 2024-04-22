@@ -56,6 +56,11 @@ type BulkIndexerConfig struct {
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
 
+	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	//
+	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
+	RetryOnDocumentStatus []int
+
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
 	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
 	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
@@ -174,6 +179,13 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		config:      cfg,
 		retryCounts: make(map[int]int),
 	}
+
+	// use a len check instead of a nil check because document level retries
+	// should be disabled using MaxDocumentRetries instead.
+	if len(b.config.RetryOnDocumentStatus) == 0 {
+		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
+	}
+
 	if cfg.CompressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
 		b.writer = b.gzipw
@@ -287,8 +299,8 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 	defer res.Body.Close()
 
-	// Reset the buffer and gzip writer so they can be reused in case 429s
-	// were received.
+	// Reset the buffer and gzip writer so they can be reused in case
+	// document level retries are needed.
 	b.resetBuf()
 
 	// Record the number of flushed bytes only when err == nil. The body may
@@ -344,7 +356,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		seen := 0
 
 		for _, res := range resp.FailedDocs {
-			if res.Status == http.StatusTooManyRequests {
+			if b.shouldRetryOnStatus(res.Status) {
 				// there are two lines for each document:
 				// - action
 				// - document
@@ -355,7 +367,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				startln := res.Position * 2
 				endln := startln + 2
 
-				// Increment 429 count for the positions found.
+				// Increment retry count for the positions found.
 				count := b.retryCounts[res.Position] + 1
 				// check if we are above the maxDocumentRetry setting
 				if count > b.config.MaxDocumentRetries {
@@ -436,7 +448,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
-				// If it's not a 429 treat the document as failed
+				// If it's not a retriable error, treat the document as failed
 				tmp = append(tmp, res)
 			}
 		}
@@ -447,6 +459,15 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	return resp, nil
+}
+
+func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
+	for _, status := range b.config.RetryOnDocumentStatus {
+		if docStatus == status {
+			return true
+		}
+	}
+	return false
 }
 
 // indexnth returns the index of the nth instance of sep in s.

@@ -848,6 +848,70 @@ func TestAppenderRetryDocument(t *testing.T) {
 	}
 }
 
+func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
+	testCases := map[string]struct {
+		status                int
+		expectedDocsInRequest []int // at index i stores the number of documents in the i-th request
+		cfg                   docappender.Config
+	}{
+		"should retry": {
+			status:                500,
+			expectedDocsInRequest: []int{1, 2, 1}, // 3rd request is triggered by indexer close
+			cfg: docappender.Config{
+				MaxRequests:           1,
+				MaxDocumentRetries:    1,
+				FlushInterval:         100 * time.Millisecond,
+				RetryOnDocumentStatus: []int{429, 500},
+			},
+		},
+		"should not retry": {
+			status:                500,
+			expectedDocsInRequest: []int{1, 1},
+			cfg: docappender.Config{
+				MaxRequests:           1,
+				MaxDocumentRetries:    1,
+				FlushInterval:         100 * time.Millisecond,
+				RetryOnDocumentStatus: []int{429},
+			},
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var failedCount atomic.Int32
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				attempt := failedCount.Add(1) - 1
+				require.Len(t, result.Items, tc.expectedDocsInRequest[attempt])
+				for _, item := range result.Items {
+					itemResp := item["create"]
+					itemResp.Status = tc.status
+					item["create"] = itemResp
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+
+			indexer, err := docappender.New(client, tc.cfg)
+			require.NoError(t, err)
+			defer indexer.Close(context.Background())
+
+			addMinimalDoc(t, indexer, "logs-foo-testing1")
+
+			require.Eventually(t, func() bool {
+				return failedCount.Load() == 1
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			addMinimalDoc(t, indexer, "logs-foo-testing2")
+
+			require.Eventually(t, func() bool {
+				return failedCount.Load() == 2
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			err = indexer.Close(context.Background())
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestAppenderCloseFlushContext(t *testing.T) {
 	srvctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
