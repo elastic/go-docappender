@@ -854,7 +854,7 @@ func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 		expectedDocsInRequest []int // At index i stores the number of documents in the i-th request
 		cfg                   docappender.Config
 	}{
-		"500 should be retried": {
+		"should retry": {
 			status:                500,
 			expectedDocsInRequest: []int{1, 2, 1},
 			cfg: docappender.Config{
@@ -864,7 +864,7 @@ func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 				RetryOnDocumentStatus: []int{429, 500},
 			},
 		},
-		"500 should not be retried": {
+		"should not retry": {
 			status:                500,
 			expectedDocsInRequest: []int{1, 1},
 			cfg: docappender.Config{
