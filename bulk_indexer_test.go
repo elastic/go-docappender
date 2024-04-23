@@ -18,6 +18,7 @@
 package docappender_test
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -31,70 +32,81 @@ import (
 )
 
 func TestBulkIndexer(t *testing.T) {
-	var esFailing atomic.Bool
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
-		if esFailing.Load() {
-			for _, itemsMap := range result.Items {
-				for k, item := range itemsMap {
-					result.HasErrors = true
-					item.Status = http.StatusTooManyRequests
-					item.Error.Type = "simulated_es_error"
-					item.Error.Reason = "for testing"
-					itemsMap[k] = item
+	for _, tc := range []struct {
+		Name             string
+		CompressionLevel int
+	}{
+		{Name: "no_compression", CompressionLevel: gzip.NoCompression},
+		{Name: "most_compression", CompressionLevel: gzip.BestCompression},
+		{Name: "speed_compression", CompressionLevel: gzip.BestSpeed},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			var esFailing atomic.Bool
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				if esFailing.Load() {
+					for _, itemsMap := range result.Items {
+						for k, item := range itemsMap {
+							result.HasErrors = true
+							item.Status = http.StatusTooManyRequests
+							item.Error.Type = "simulated_es_error"
+							item.Error.Reason = "for testing"
+							itemsMap[k] = item
+						}
+					}
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:                client,
+				MaxDocumentRetries:    100_000, // infinite for testing purpose
+				RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
+				CompressionLevel:      tc.CompressionLevel,
+			})
+			require.NoError(t, err)
+
+			generateLoad := func(count int) {
+				for i := 0; i < count; i++ {
+					require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+						Index: "testidx",
+						Body: newJSONReader(map[string]any{
+							"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+						}),
+					}))
 				}
 			}
-		}
-		json.NewEncoder(w).Encode(result)
-	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client:                client,
-		MaxDocumentRetries:    100_000, // infinite for testing purpose
-		RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
-		CompressionLevel:      0,
-	})
-	require.NoError(t, err)
 
-	generateLoad := func(count int) {
-		for i := 0; i < count; i++ {
-			require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-				Index: "testidx",
-				Body: newJSONReader(map[string]any{
-					"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
-				}),
-			}))
-		}
+			itemCount := 1_000
+			generateLoad(itemCount)
+
+			// All items should be successfully flushed
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(itemCount), stat.Indexed)
+
+			// Simulate ES failure, all items should be enqueued for retries
+			esFailing.Store(true)
+			generateLoad(itemCount)
+			require.Equal(t, itemCount, indexer.Items())
+
+			for i := 0; i < 10; i++ {
+				stat, err := indexer.Flush(context.Background())
+				require.NoError(t, err)
+				require.Equal(t, int64(0), stat.Indexed)
+				require.Equal(t, itemCount, len(stat.FailedDocs))
+				require.Equal(t, int64(itemCount), stat.RetriedDocs)
+
+				// Generate more load, all these items should be enqueued for retries
+				generateLoad(10)
+				itemCount += 10
+				require.Equal(t, itemCount, indexer.Items())
+			}
+
+			// Recover ES and ensure all items are indexed
+			esFailing.Store(false)
+			stat, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(itemCount), stat.Indexed)
+		})
 	}
-
-	itemCount := 1_000
-	generateLoad(itemCount)
-
-	// All items should be successfully flushed
-	stat, err := indexer.Flush(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, int64(itemCount), stat.Indexed)
-
-	// Simulate ES failure, all items should be enqueued for retries
-	esFailing.Store(true)
-	generateLoad(itemCount)
-	require.Equal(t, itemCount, indexer.Items())
-
-	for i := 0; i < 10; i++ {
-		stat, err := indexer.Flush(context.Background())
-		require.NoError(t, err)
-		require.Equal(t, int64(0), stat.Indexed)
-		require.Equal(t, itemCount, len(stat.FailedDocs))
-		require.Equal(t, int64(itemCount), stat.RetriedDocs)
-
-		// Generate more load, all these items should be enqueued for retries
-		generateLoad(10)
-		itemCount += 10
-		require.Equal(t, itemCount, indexer.Items())
-	}
-
-	// Recover ES and ensure all items are indexed
-	esFailing.Store(false)
-	stat, err = indexer.Flush(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, int64(itemCount), stat.Indexed)
 }
