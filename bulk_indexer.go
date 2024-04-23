@@ -79,7 +79,7 @@ type BulkIndexer struct {
 	bytesFlushed       int
 	bytesUncompFlushed int
 	jsonw              fastjson.Writer
-	writer             countWriter
+	writer             *countWriter
 	gzipw              *gzip.Writer
 	copyBuf            []byte
 	buf                bytes.Buffer
@@ -196,10 +196,10 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	if len(b.config.RetryOnDocumentStatus) == 0 {
 		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
 	}
-
+	var writer io.Writer
 	if cfg.CompressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
-		b.writer = b.gzipw
+		writer = b.gzipw
 	} else {
 		writer = &b.buf
 	}
