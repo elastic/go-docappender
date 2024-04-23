@@ -273,12 +273,12 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	if b.config.MaxDocumentRetries > 0 {
-		if cap(b.copyBuf) < b.buf.Len() {
-			b.copyBuf = slices.Grow(b.copyBuf, b.buf.Len()-len(b.copyBuf))
+		n := b.buf.Len()
+		if cap(b.copyBuf) < n {
+			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
 		}
-		b.copyBuf = b.copyBuf[:cap(b.copyBuf)]
-		n := copy(b.copyBuf, b.buf.Bytes())
 		b.copyBuf = b.copyBuf[:n]
+		copy(b.copyBuf, b.buf.Bytes())
 	}
 
 	req := esapi.BulkRequest{
