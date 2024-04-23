@@ -18,13 +18,14 @@
 package docappender_test
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/gzip"
 
 	"github.com/elastic/go-docappender/v2"
 	"github.com/elastic/go-docappender/v2/docappendertest"
@@ -39,6 +40,7 @@ func TestBulkIndexer(t *testing.T) {
 		{Name: "no_compression", CompressionLevel: gzip.NoCompression},
 		{Name: "most_compression", CompressionLevel: gzip.BestCompression},
 		{Name: "speed_compression", CompressionLevel: gzip.BestSpeed},
+		{Name: "constant_compression", CompressionLevel: gzip.ConstantCompression},
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
 			var esFailing atomic.Bool
