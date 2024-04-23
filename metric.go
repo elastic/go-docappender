@@ -33,6 +33,7 @@ type metrics struct {
 	docsActive            metric.Int64UpDownCounter
 	docsIndexed           metric.Int64Counter
 	bytesTotal            metric.Int64Counter
+	bytesUncompTotal      metric.Int64Counter
 	availableBulkRequests metric.Int64UpDownCounter
 	activeCreated         metric.Int64Counter
 	activeDestroyed       metric.Int64Counter
@@ -108,6 +109,12 @@ func newMetrics(cfg Config) (metrics, error) {
 			description: "The total number of bytes written to the request body",
 			unit:        "by",
 			p:           &ms.bytesTotal,
+		},
+		{
+			name:        "elasticsearch.flushed.uncompressed.bytes",
+			description: "The total number of uncompressed bytes written to the request body",
+			unit:        "by",
+			p:           &ms.bytesUncompTotal,
 		},
 		{
 			name:        "elasticsearch.indexer.created",

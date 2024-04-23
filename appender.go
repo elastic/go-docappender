@@ -69,6 +69,7 @@ type Appender struct {
 	docsIndexed           int64
 	tooManyRequests       int64
 	bytesTotal            int64
+	bytesUncompTotal      int64
 	availableBulkRequests int64
 	activeCreated         int64
 	activeDestroyed       int64
@@ -220,6 +221,7 @@ func (a *Appender) Stats() Stats {
 		Indexed:               atomic.LoadInt64(&a.docsIndexed),
 		TooManyRequests:       atomic.LoadInt64(&a.tooManyRequests),
 		BytesTotal:            atomic.LoadInt64(&a.bytesTotal),
+		BytesUncompTotal:      atomic.LoadInt64(&a.bytesUncompTotal),
 		AvailableBulkRequests: atomic.LoadInt64(&a.availableBulkRequests),
 		IndexersActive:        a.scalingInformation().activeIndexers,
 		IndexersCreated:       atomic.LoadInt64(&a.activeCreated),
@@ -317,6 +319,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
 		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
+	}
+	// Record the BulkIndexer buffer's length as the bytesTotal metric after
+	// the request has been flushed.
+	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
+		a.addCount(int64(flushed), &a.bytesUncompTotal, a.metrics.bytesUncompTotal)
 	}
 	if err != nil {
 		atomic.AddInt64(&a.docsFailed, int64(n))
@@ -718,6 +725,11 @@ type Stats struct {
 	// This implementation differs from the previous number reported by libbeat
 	// which counts bytes at the transport level.
 	BytesTotal int64
+
+	// BytesUncompTotal represents the total number of bytes written to
+	// the request body before compression.
+	// The number of bytes written will be equal to BytesTotal if compression is disabled.
+	BytesUncompTotal int64
 
 	// AvailableBulkRequests represents the number of bulk indexers
 	// available for making bulk index requests.

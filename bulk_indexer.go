@@ -49,16 +49,17 @@ import (
 // maximum possible size, based on configuration and throughput.
 
 type BulkIndexer struct {
-	client           *elasticsearch.Client
-	maxDocumentRetry int
-	itemsAdded       int
-	bytesFlushed     int
-	jsonw            fastjson.Writer
-	writer           io.Writer
-	gzipw            *gzip.Writer
-	copyBuf          []byte
-	buf              bytes.Buffer
-	retryCounts      map[int]int
+	client             *elasticsearch.Client
+	maxDocumentRetry   int
+	itemsAdded         int
+	bytesFlushed       int
+	bytesUncompFlushed int
+	jsonw              fastjson.Writer
+	writer             *countWriter
+	gzipw              *gzip.Writer
+	copyBuf            []byte
+	buf                bytes.Buffer
+	retryCounts        map[int]int
 }
 
 type BulkIndexerResponseStat struct {
@@ -137,17 +138,32 @@ func init() {
 	})
 }
 
+type countWriter struct {
+	count int
+	io.Writer
+}
+
+func (cw *countWriter) Write(p []byte) (int, error) {
+	cw.count += len(p)
+	return cw.Writer.Write(p)
+}
+
 func NewBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRetry int) *BulkIndexer {
 	b := &BulkIndexer{
 		client:           client,
 		maxDocumentRetry: maxDocRetry,
 		retryCounts:      make(map[int]int),
 	}
+	var writer io.Writer
 	if compressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, compressionLevel)
-		b.writer = b.gzipw
+		writer = b.gzipw
 	} else {
-		b.writer = &b.buf
+		writer = &b.buf
+	}
+	b.writer = &countWriter{
+		0,
+		writer,
 	}
 	return b
 }
@@ -155,10 +171,12 @@ func NewBulkIndexer(client *elasticsearch.Client, compressionLevel int, maxDocRe
 // BulkIndexer resets b, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
+	b.writer.count = 0
 }
 
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
+	b.writer.count = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -178,6 +196,11 @@ func (b *BulkIndexer) Len() int {
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
 func (b *BulkIndexer) BytesFlushed() int {
 	return b.bytesFlushed
+}
+
+// BytesUncompFlushed returns the number of uncompressed bytes flushed by the bulk indexer.
+func (b *BulkIndexer) BytesUncompFlushed() int {
+	return b.bytesUncompFlushed
 }
 
 type BulkIndexerItem struct {
@@ -248,6 +271,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
+	bytesUncompFlushed := b.writer.count
 	res, err := req.Do(ctx, b.client)
 	if err != nil {
 		b.resetBuf()
@@ -262,6 +286,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
+	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {

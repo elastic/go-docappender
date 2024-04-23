@@ -138,6 +138,7 @@ loop:
 		TooManyRequests:       1,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
+		BytesUncompTotal:      880,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -187,6 +188,8 @@ loop:
 			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, stats.BytesTotal, indexerAttrs)
+		case "elasticsearch.flushed.uncompressed.bytes":
+			assertCounter(m, stats.BytesUncompTotal, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -196,7 +199,7 @@ loop:
 	})
 
 	assert.Empty(t, unexpectedMetrics)
-	assert.Equal(t, int64(6), asserted.Load())
+	assert.Equal(t, int64(7), asserted.Load())
 	assert.Equal(t, 4, processedAsserted)
 }
 
@@ -311,6 +314,7 @@ func TestAppenderCompressionLevel(t *testing.T) {
 		TooManyRequests:       0,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
+		BytesUncompTotal:      88, // get this value programmatically?
 	}, stats)
 }
 
