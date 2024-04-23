@@ -46,8 +46,8 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/elastic/go-docappender"
-	"github.com/elastic/go-docappender/docappendertest"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
@@ -770,6 +770,13 @@ func TestAppenderRetryDocument(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
+			rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+				func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+					return metricdata.DeltaTemporality
+				},
+			))
+			var rm metricdata.ResourceMetrics
+
 			var failedCount atomic.Int32
 			var done atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -820,6 +827,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 				done.Store(true)
 			})
 
+			tc.cfg.MeterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr))
 			indexer, err := docappender.New(client, tc.cfg)
 			require.NoError(t, err)
 			defer indexer.Close(context.Background())
@@ -833,6 +841,18 @@ func TestAppenderRetryDocument(t *testing.T) {
 				return failedCount.Load() == 1
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
 
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+			var asserted atomic.Int64
+			assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+				switch m.Name {
+				case "elasticsearch.events.retried":
+					assertCounter(m, 5, *attribute.EmptySet())
+				}
+			})
+			assert.Equal(t, int64(1), asserted.Load())
+
 			addMinimalDoc(t, indexer, "logs-foo-testing10")
 			addMinimalDoc(t, indexer, "logs-foo-testing11")
 
@@ -840,11 +860,86 @@ func TestAppenderRetryDocument(t *testing.T) {
 				return failedCount.Load() == 2
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
 
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+			assertCounter = docappendertest.NewAssertCounter(t, &asserted)
+			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+				switch m.Name {
+				case "elasticsearch.events.retried":
+					assertCounter(m, 5, *attribute.EmptySet())
+				}
+			})
+			assert.Equal(t, int64(2), asserted.Load())
+
 			addMinimalDoc(t, indexer, "logs-foo-testing12")
 
 			require.Eventually(t, func() bool {
 				return done.Load()
 			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for second flush request to finish")
+
+			err = indexer.Close(context.Background())
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
+	testCases := map[string]struct {
+		status                int
+		expectedDocsInRequest []int // at index i stores the number of documents in the i-th request
+		cfg                   docappender.Config
+	}{
+		"should retry": {
+			status:                500,
+			expectedDocsInRequest: []int{1, 2, 1}, // 3rd request is triggered by indexer close
+			cfg: docappender.Config{
+				MaxRequests:           1,
+				MaxDocumentRetries:    1,
+				FlushInterval:         100 * time.Millisecond,
+				RetryOnDocumentStatus: []int{429, 500},
+			},
+		},
+		"should not retry": {
+			status:                500,
+			expectedDocsInRequest: []int{1, 1},
+			cfg: docappender.Config{
+				MaxRequests:           1,
+				MaxDocumentRetries:    1,
+				FlushInterval:         100 * time.Millisecond,
+				RetryOnDocumentStatus: []int{429},
+			},
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var failedCount atomic.Int32
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				attempt := failedCount.Add(1) - 1
+				require.Len(t, result.Items, tc.expectedDocsInRequest[attempt])
+				for _, item := range result.Items {
+					itemResp := item["create"]
+					itemResp.Status = tc.status
+					item["create"] = itemResp
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+
+			indexer, err := docappender.New(client, tc.cfg)
+			require.NoError(t, err)
+			defer indexer.Close(context.Background())
+
+			addMinimalDoc(t, indexer, "logs-foo-testing1")
+
+			require.Eventually(t, func() bool {
+				return failedCount.Load() == 1
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
+
+			addMinimalDoc(t, indexer, "logs-foo-testing2")
+
+			require.Eventually(t, func() bool {
+				return failedCount.Load() == 2
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for first flush request to fail")
 
 			err = indexer.Close(context.Background())
 			assert.NoError(t, err)
@@ -1040,6 +1135,36 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		BytesTotal:            bytesTotal,
 		AvailableBulkRequests: 10,
 		IndexersActive:        0}, indexer.Stats())
+}
+
+func TestAppenderPipeline(t *testing.T) {
+	const expected = "my_pipeline"
+	var actual string
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		actual = r.URL.Query().Get("pipeline")
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval: time.Minute,
+		Pipeline:      expected,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	err = indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+		"@timestamp":            time.Unix(123, 456789111).UTC().Format(docappendertest.TimestampFormat),
+		"data_stream.type":      "logs",
+		"data_stream.dataset":   "foo",
+		"data_stream.namespace": "testing",
+	}))
+	require.NoError(t, err)
+
+	// Closing the indexer flushes enqueued documents.
+	err = indexer.Close(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, expected, actual)
 }
 
 func TestAppenderScaling(t *testing.T) {
