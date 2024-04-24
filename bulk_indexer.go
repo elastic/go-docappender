@@ -282,7 +282,15 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	req := esapi.BulkRequest{
-		Body:       &b.buf,
+		// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
+		// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
+		// reading from the buffer after the request is done and the call to `req.Do` has returned.
+		// This may happen in HTTP error cases when the server isn't required to read the full
+		// request body before sending a response.
+		// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
+		// internal member variables (b.buf.off, b.buf.lastRead).
+		// See: https://github.com/golang/go/issues/51907
+		Body:       bytes.NewReader(b.buf.Bytes()),
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
 		Pipeline:   b.config.Pipeline,
