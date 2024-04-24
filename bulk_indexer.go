@@ -290,7 +290,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
 		// internal member variables (b.buf.off, b.buf.lastRead).
 		// See: https://github.com/golang/go/issues/51907
-		Body:       bytes.NewBuffer(b.buf.Bytes()),
+		Body:       bytes.NewReader(b.buf.Bytes()),
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
 		Pipeline:   b.config.Pipeline,
