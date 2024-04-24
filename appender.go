@@ -337,7 +337,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
-	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
+	if flushed := bulkIndexer.BytesUncompFlushed(); flushed > 0 {
 		a.addCount(int64(flushed), &a.bytesUncompTotal, a.metrics.bytesUncompTotal)
 	}
 	if err != nil {
