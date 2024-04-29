@@ -38,6 +38,7 @@ func TestBulkIndexer(t *testing.T) {
 		CompressionLevel int
 	}{
 		{Name: "no_compression", CompressionLevel: gzip.NoCompression},
+		{Name: "default_compression", CompressionLevel: gzip.DefaultCompression},
 		{Name: "most_compression", CompressionLevel: gzip.BestCompression},
 		{Name: "speed_compression", CompressionLevel: gzip.BestSpeed},
 	} {
