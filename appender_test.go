@@ -53,9 +53,11 @@ import (
 
 func TestAppender(t *testing.T) {
 	var bytesTotal int64
+	var bytesUncompressed int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, size := docappendertest.DecodeBulkRequest(r)
+		bytesUncompressed += size
 		result.HasErrors = true
 		// Respond with an error for the first two items, with one indicating
 		// "too many requests". These will be recorded as failures in indexing
@@ -138,7 +140,7 @@ loop:
 		TooManyRequests:       1,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      880,
+		BytesUncompTotal:      bytesUncompressed,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -210,7 +212,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 		receivedFlush <- struct{}{}
 		// Wait until signaled to service requests
 		<-unblockRequests
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute, FlushBytes: 1})
@@ -239,7 +241,8 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
 	stats = indexer.Stats()
-	stats.BytesTotal = 0 // Asserted elsewhere.
+	stats.BytesTotal = 0       // Asserted elsewhere.
+	stats.BytesUncompTotal = 0 // Asserted elsewhere.
 	assert.Equal(t, docappender.Stats{
 		Added:                 N,
 		BulkRequests:          N,
@@ -252,7 +255,7 @@ func TestAppenderEncoding(t *testing.T) {
 	var indexed [][]byte
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		var result esutil.BulkIndexerResponse
-		indexed, result = docappendertest.DecodeBulkRequest(r)
+		indexed, result, _ = docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{
@@ -287,9 +290,11 @@ func TestAppenderEncoding(t *testing.T) {
 
 func TestAppenderCompressionLevel(t *testing.T) {
 	var bytesTotal int64
+	var bytesUnompTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, size := docappendertest.DecodeBulkRequest(r)
+		bytesUnompTotal += size
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{
@@ -314,7 +319,7 @@ func TestAppenderCompressionLevel(t *testing.T) {
 		TooManyRequests:       0,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      88, // get this value programmatically?
+		BytesUncompTotal:      bytesUnompTotal,
 	}, stats)
 }
 
@@ -395,7 +400,7 @@ func TestAppenderFlushTimeout(t *testing.T) {
 func TestAppenderFlushMetric(t *testing.T) {
 	requests := make(chan esutil.BulkIndexerResponse)
 	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
-		_, items := docappendertest.DecodeBulkRequest(r)
+		_, items, _ := docappendertest.DecodeBulkRequest(r)
 		select {
 		case <-r.Context().Done():
 		case requests <- items:
@@ -508,8 +513,11 @@ func TestAppenderFlushBytes(t *testing.T) {
 
 func TestAppenderServerError(t *testing.T) {
 	var bytesTotal int64
+	var bytesUncompTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
+		_, _, size := docappendertest.DecodeBulkRequest(r)
+		bytesUncompTotal += size
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
@@ -529,15 +537,19 @@ func TestAppenderServerError(t *testing.T) {
 		Failed:                1,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
+		BytesUncompTotal:      bytesUncompTotal,
 	}, stats)
 }
 
 func TestAppenderServerErrorTooManyRequests(t *testing.T) {
 	var bytesTotal int64
+	var bytesUncompTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		// Set the r.ContentLength rather than sum it since 429s will be
 		// retried by the go-elasticsearch transport.
 		bytesTotal = r.ContentLength
+		_, _, size := docappendertest.DecodeBulkRequest(r)
+		bytesUncompTotal = size
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
@@ -558,12 +570,13 @@ func TestAppenderServerErrorTooManyRequests(t *testing.T) {
 		TooManyRequests:       1,
 		AvailableBulkRequests: 10,
 		BytesTotal:            bytesTotal,
+		BytesUncompTotal:      bytesUncompTotal,
 	}, stats)
 }
 
 func TestAppenderIndexFailedLogging(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		for i, item := range result.Items {
 			itemResp := item["create"]
 			itemResp.Index = "an_index"
@@ -609,7 +622,7 @@ func TestAppenderRetryLimit(t *testing.T) {
 	var failedCount atomic.Int32
 	var done atomic.Bool
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		switch failedCount.Add(1) {
 		case 1:
 			// Fail logs-foo-testing1 to ensure retries are working
@@ -705,7 +718,7 @@ func TestAppenderRetryFlushOnClose(t *testing.T) {
 	var failedCount atomic.Int32
 	var done atomic.Bool
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		switch failedCount.Add(1) {
 		case 1:
 			// Fail logs-foo-testing1 to ensure retries are working
@@ -780,7 +793,7 @@ func TestAppenderRetryDocument(t *testing.T) {
 			var failedCount atomic.Int32
 			var done atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result := docappendertest.DecodeBulkRequest(r)
+				_, result, _ := docappendertest.DecodeBulkRequest(r)
 				switch failedCount.Add(1) {
 				case 1:
 					require.Len(t, result.Items, 10)
@@ -914,7 +927,7 @@ func TestAppenderRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var failedCount atomic.Int32
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result := docappendertest.DecodeBulkRequest(r)
+				_, result, _ := docappendertest.DecodeBulkRequest(r)
 				attempt := failedCount.Add(1) - 1
 				require.Len(t, result.Items, tc.expectedDocsInRequest[attempt])
 				for _, item := range result.Items {
@@ -1072,7 +1085,7 @@ func (f readerFunc) WriteTo(p io.Writer) (n int64, err error) {
 
 func TestAppenderFlushGoroutineStopped(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
 
@@ -1112,9 +1125,11 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 	// This test ensures that all the channel items are consumed and indexed
 	// when the indexer is closed.
 	var bytesTotal int64
+	var bytesUncompTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, size := docappendertest.DecodeBulkRequest(r)
+		bytesUncompTotal = size
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{})
@@ -1133,6 +1148,7 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		Indexed:               N,
 		BulkRequests:          1,
 		BytesTotal:            bytesTotal,
+		BytesUncompTotal:      bytesUncompTotal,
 		AvailableBulkRequests: 10,
 		IndexersActive:        0}, indexer.Stats())
 }
@@ -1142,7 +1158,7 @@ func TestAppenderPipeline(t *testing.T) {
 	var actual string
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		actual = r.URL.Query().Get("pipeline")
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{
@@ -1171,7 +1187,7 @@ func TestAppenderScaling(t *testing.T) {
 	newIndexer := func(t *testing.T, cfg docappender.Config) *docappender.Appender {
 		t.Helper()
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-			_, result := docappendertest.DecodeBulkRequest(r)
+			_, result, _ := docappendertest.DecodeBulkRequest(r)
 			json.NewEncoder(w).Encode(result)
 		})
 		indexer, err := docappender.New(client, cfg)
@@ -1256,6 +1272,7 @@ func TestAppenderScaling(t *testing.T) {
 		waitForScaleDown(t, indexer, 1)
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
+		stats.BytesUncompTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,
@@ -1297,6 +1314,7 @@ func TestAppenderScaling(t *testing.T) {
 
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
+		stats.BytesUncompTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,
@@ -1338,6 +1356,7 @@ func TestAppenderScaling(t *testing.T) {
 		assert.NoError(t, indexer.Close(ctx))
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
+		stats.BytesUncompTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,
@@ -1355,7 +1374,7 @@ func TestAppenderScaling(t *testing.T) {
 		var mu sync.RWMutex
 		var tooMany bool // must be accessed with the mutex held.
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-			_, result := docappendertest.DecodeBulkRequest(r)
+			_, result, _ := docappendertest.DecodeBulkRequest(r)
 			mu.RLock()
 			tooManyResp := tooMany
 			mu.RUnlock()
@@ -1434,7 +1453,7 @@ func TestAppenderTracing(t *testing.T) {
 func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
 

@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,7 +45,10 @@ import (
 const TimestampFormat = "2006-01-02T15:04:05.000Z07:00"
 
 // DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
-func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
+func DecodeBulkRequest(r *http.Request) (
+	docs [][]byte,
+	res esutil.BulkIndexerResponse,
+	rawRequestSize int64) {
 	body := r.Body
 	switch r.Header.Get("Content-Encoding") {
 	case "gzip":
@@ -55,7 +59,11 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 		defer r.Close()
 		body = r
 	}
-
+	cr := &countReader{
+		ReadCloser: body,
+	}
+	body = cr
+	defer cr.Close()
 	scanner := bufio.NewScanner(body)
 	var indexed [][]byte
 	var result esutil.BulkIndexerResponse
@@ -82,7 +90,7 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
 	}
-	return indexed, result
+	return indexed, result, int64(cr.count)
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
@@ -139,4 +147,17 @@ func AssertOTelMetrics(t testing.TB, ms []metricdata.Metrics, assert func(m metr
 	for _, m := range ms {
 		assert(m)
 	}
+}
+
+// helper reader to keep track of the bytes read by ReadCloser
+type countReader struct {
+	count int
+	io.ReadCloser
+}
+
+// Read implements the [io.Reader] interface.
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.count += n
+	return n, err
 }

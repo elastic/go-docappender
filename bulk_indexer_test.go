@@ -44,7 +44,7 @@ func TestBulkIndexer(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			var esFailing atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result := docappendertest.DecodeBulkRequest(r)
+				_, result, _ := docappendertest.DecodeBulkRequest(r)
 				if esFailing.Load() {
 					for _, itemsMap := range result.Items {
 						for k, item := range itemsMap {

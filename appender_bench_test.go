@@ -111,7 +111,7 @@ func BenchmarkAppender(b *testing.B) {
 func BenchmarkAppenderError(b *testing.B) {
 	client := docappendertest.NewMockElasticsearchClient(b, func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		_, result := docappendertest.DecodeBulkRequest(r)
+		_, result, _ := docappendertest.DecodeBulkRequest(r)
 		for i, item := range result.Items {
 			itemResp := item["create"]
 			itemResp.Index = "an_index"
