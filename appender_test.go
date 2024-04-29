@@ -130,17 +130,17 @@ loop:
 	stats := indexer.Stats()
 	failed := int64(3)
 	assert.Equal(t, docappender.Stats{
-		Added:                 N,
-		Active:                0,
-		BulkRequests:          1,
-		Failed:                failed,
-		FailedClient:          1,
-		FailedServer:          1,
-		Indexed:               N - failed,
-		TooManyRequests:       1,
-		AvailableBulkRequests: 10,
-		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      bytesUncompressed,
+		Added:                  N,
+		Active:                 0,
+		BulkRequests:           1,
+		Failed:                 failed,
+		FailedClient:           1,
+		FailedServer:           1,
+		Indexed:                N - failed,
+		TooManyRequests:        1,
+		AvailableBulkRequests:  10,
+		BytesTotal:             bytesTotal,
+		BytesUncompressedTotal: bytesUncompressed,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -191,7 +191,7 @@ loop:
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, stats.BytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
-			assertCounter(m, stats.BytesUncompTotal, indexerAttrs)
+			assertCounter(m, stats.BytesUncompressedTotal, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -241,8 +241,8 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
 	stats = indexer.Stats()
-	stats.BytesTotal = 0       // Asserted elsewhere.
-	stats.BytesUncompTotal = 0 // Asserted elsewhere.
+	stats.BytesTotal = 0             // Asserted elsewhere.
+	stats.BytesUncompressedTotal = 0 // Asserted elsewhere.
 	assert.Equal(t, docappender.Stats{
 		Added:                 N,
 		BulkRequests:          N,
@@ -290,11 +290,11 @@ func TestAppenderEncoding(t *testing.T) {
 
 func TestAppenderCompressionLevel(t *testing.T) {
 	var bytesTotal int64
-	var bytesUnompTotal int64
+	var bytesUncompressedTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, result, size := docappendertest.DecodeBulkRequest(r)
-		bytesUnompTotal += size
+		bytesUncompressedTotal += size
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{
@@ -311,15 +311,15 @@ func TestAppenderCompressionLevel(t *testing.T) {
 	require.NoError(t, err)
 	stats := indexer.Stats()
 	assert.Equal(t, docappender.Stats{
-		Added:                 1,
-		Active:                0,
-		BulkRequests:          1,
-		Failed:                0,
-		Indexed:               1,
-		TooManyRequests:       0,
-		AvailableBulkRequests: 10,
-		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      bytesUnompTotal,
+		Added:                  1,
+		Active:                 0,
+		BulkRequests:           1,
+		Failed:                 0,
+		Indexed:                1,
+		TooManyRequests:        0,
+		AvailableBulkRequests:  10,
+		BytesTotal:             bytesTotal,
+		BytesUncompressedTotal: bytesUncompressedTotal,
 	}, stats)
 }
 
@@ -513,11 +513,11 @@ func TestAppenderFlushBytes(t *testing.T) {
 
 func TestAppenderServerError(t *testing.T) {
 	var bytesTotal int64
-	var bytesUncompTotal int64
+	var bytesUncompressedTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, _, size := docappendertest.DecodeBulkRequest(r)
-		bytesUncompTotal += size
+		bytesUncompressedTotal += size
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
@@ -531,25 +531,25 @@ func TestAppenderServerError(t *testing.T) {
 	require.EqualError(t, err, "flush failed: [500 Internal Server Error] ")
 	stats := indexer.Stats()
 	assert.Equal(t, docappender.Stats{
-		Added:                 1,
-		Active:                0,
-		BulkRequests:          1,
-		Failed:                1,
-		AvailableBulkRequests: 10,
-		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      bytesUncompTotal,
+		Added:                  1,
+		Active:                 0,
+		BulkRequests:           1,
+		Failed:                 1,
+		AvailableBulkRequests:  10,
+		BytesTotal:             bytesTotal,
+		BytesUncompressedTotal: bytesUncompressedTotal,
 	}, stats)
 }
 
 func TestAppenderServerErrorTooManyRequests(t *testing.T) {
 	var bytesTotal int64
-	var bytesUncompTotal int64
+	var bytesUncompressedTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		// Set the r.ContentLength rather than sum it since 429s will be
 		// retried by the go-elasticsearch transport.
 		bytesTotal = r.ContentLength
 		_, _, size := docappendertest.DecodeBulkRequest(r)
-		bytesUncompTotal = size
+		bytesUncompressedTotal = size
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
@@ -563,14 +563,14 @@ func TestAppenderServerErrorTooManyRequests(t *testing.T) {
 	require.EqualError(t, err, "flush failed: [429 Too Many Requests] ")
 	stats := indexer.Stats()
 	assert.Equal(t, docappender.Stats{
-		Added:                 1,
-		Active:                0,
-		BulkRequests:          1,
-		Failed:                1,
-		TooManyRequests:       1,
-		AvailableBulkRequests: 10,
-		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      bytesUncompTotal,
+		Added:                  1,
+		Active:                 0,
+		BulkRequests:           1,
+		Failed:                 1,
+		TooManyRequests:        1,
+		AvailableBulkRequests:  10,
+		BytesTotal:             bytesTotal,
+		BytesUncompressedTotal: bytesUncompressedTotal,
 	}, stats)
 }
 
@@ -1125,11 +1125,11 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 	// This test ensures that all the channel items are consumed and indexed
 	// when the indexer is closed.
 	var bytesTotal int64
-	var bytesUncompTotal int64
+	var bytesUncompressedTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, result, size := docappendertest.DecodeBulkRequest(r)
-		bytesUncompTotal = size
+		bytesUncompressedTotal = size
 		json.NewEncoder(w).Encode(result)
 	})
 	indexer, err := docappender.New(client, docappender.Config{})
@@ -1144,13 +1144,13 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 	assert.NoError(t, indexer.Close(context.Background()))
 
 	assert.Equal(t, docappender.Stats{
-		Added:                 N,
-		Indexed:               N,
-		BulkRequests:          1,
-		BytesTotal:            bytesTotal,
-		BytesUncompTotal:      bytesUncompTotal,
-		AvailableBulkRequests: 10,
-		IndexersActive:        0}, indexer.Stats())
+		Added:                  N,
+		Indexed:                N,
+		BulkRequests:           1,
+		BytesTotal:             bytesTotal,
+		BytesUncompressedTotal: bytesUncompressedTotal,
+		AvailableBulkRequests:  10,
+		IndexersActive:         0}, indexer.Stats())
 }
 
 func TestAppenderPipeline(t *testing.T) {
@@ -1272,7 +1272,7 @@ func TestAppenderScaling(t *testing.T) {
 		waitForScaleDown(t, indexer, 1)
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
-		stats.BytesUncompTotal = 0
+		stats.BytesUncompressedTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,
@@ -1314,7 +1314,7 @@ func TestAppenderScaling(t *testing.T) {
 
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
-		stats.BytesUncompTotal = 0
+		stats.BytesUncompressedTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,
@@ -1356,7 +1356,7 @@ func TestAppenderScaling(t *testing.T) {
 		assert.NoError(t, indexer.Close(ctx))
 		stats := indexer.Stats()
 		stats.BytesTotal = 0
-		stats.BytesUncompTotal = 0
+		stats.BytesUncompressedTotal = 0
 		assert.Equal(t, docappender.Stats{
 			Active:                0,
 			Added:                 docs,

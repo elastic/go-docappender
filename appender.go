@@ -60,19 +60,19 @@ var (
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
 	// legacy metrics for Stats()
-	bulkRequests          int64
-	docsAdded             int64
-	docsActive            int64
-	docsFailed            int64
-	docsFailedClient      int64
-	docsFailedServer      int64
-	docsIndexed           int64
-	tooManyRequests       int64
-	bytesTotal            int64
-	bytesUncompTotal      int64
-	availableBulkRequests int64
-	activeCreated         int64
-	activeDestroyed       int64
+	bulkRequests           int64
+	docsAdded              int64
+	docsActive             int64
+	docsFailed             int64
+	docsFailedClient       int64
+	docsFailedServer       int64
+	docsIndexed            int64
+	tooManyRequests        int64
+	bytesTotal             int64
+	bytesUncompressedTotal int64
+	availableBulkRequests  int64
+	activeCreated          int64
+	activeDestroyed        int64
 
 	scalingInfo atomic.Value
 
@@ -227,20 +227,20 @@ func (a *Appender) Close(ctx context.Context) error {
 // Stats returns the bulk indexing stats.
 func (a *Appender) Stats() Stats {
 	return Stats{
-		Added:                 atomic.LoadInt64(&a.docsAdded),
-		Active:                atomic.LoadInt64(&a.docsActive),
-		BulkRequests:          atomic.LoadInt64(&a.bulkRequests),
-		Failed:                atomic.LoadInt64(&a.docsFailed),
-		FailedClient:          atomic.LoadInt64(&a.docsFailedClient),
-		FailedServer:          atomic.LoadInt64(&a.docsFailedServer),
-		Indexed:               atomic.LoadInt64(&a.docsIndexed),
-		TooManyRequests:       atomic.LoadInt64(&a.tooManyRequests),
-		BytesTotal:            atomic.LoadInt64(&a.bytesTotal),
-		BytesUncompTotal:      atomic.LoadInt64(&a.bytesUncompTotal),
-		AvailableBulkRequests: atomic.LoadInt64(&a.availableBulkRequests),
-		IndexersActive:        a.scalingInformation().activeIndexers,
-		IndexersCreated:       atomic.LoadInt64(&a.activeCreated),
-		IndexersDestroyed:     atomic.LoadInt64(&a.activeDestroyed),
+		Added:                  atomic.LoadInt64(&a.docsAdded),
+		Active:                 atomic.LoadInt64(&a.docsActive),
+		BulkRequests:           atomic.LoadInt64(&a.bulkRequests),
+		Failed:                 atomic.LoadInt64(&a.docsFailed),
+		FailedClient:           atomic.LoadInt64(&a.docsFailedClient),
+		FailedServer:           atomic.LoadInt64(&a.docsFailedServer),
+		Indexed:                atomic.LoadInt64(&a.docsIndexed),
+		TooManyRequests:        atomic.LoadInt64(&a.tooManyRequests),
+		BytesTotal:             atomic.LoadInt64(&a.bytesTotal),
+		BytesUncompressedTotal: atomic.LoadInt64(&a.bytesUncompressedTotal),
+		AvailableBulkRequests:  atomic.LoadInt64(&a.availableBulkRequests),
+		IndexersActive:         a.scalingInformation().activeIndexers,
+		IndexersCreated:        atomic.LoadInt64(&a.activeCreated),
+		IndexersDestroyed:      atomic.LoadInt64(&a.activeDestroyed),
 	}
 }
 
@@ -338,7 +338,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesUncompFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), &a.bytesUncompTotal, a.metrics.bytesUncompTotal)
+		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
 	}
 	if err != nil {
 		atomic.AddInt64(&a.docsFailed, int64(n))
@@ -747,10 +747,10 @@ type Stats struct {
 	// which counts bytes at the transport level.
 	BytesTotal int64
 
-	// BytesUncompTotal represents the total number of bytes written to
+	// BytesUncompressedTotal represents the total number of bytes written to
 	// the request body before compression.
 	// The number of bytes written will be equal to BytesTotal if compression is disabled.
-	BytesUncompTotal int64
+	BytesUncompressedTotal int64
 
 	// AvailableBulkRequests represents the number of bulk indexers
 	// available for making bulk index requests.
