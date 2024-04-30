@@ -235,7 +235,10 @@ func (b *BulkIndexer) Len() int {
 	return b.buf.Len()
 }
 
-// Len returns the number of buffered bytes.
+// UncompressedLen returns the number of uncompressed buffered bytes.
+// `pendingUncomBytes` holds the number of uncompressed buffered bytes
+// written for a retry from the previous Flush.
+// if retry is disabled, it is always zero.
 func (b *BulkIndexer) UncompressedLen() int {
 	return b.writer.count + b.pendingUncomBytes
 }

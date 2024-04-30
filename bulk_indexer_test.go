@@ -79,6 +79,9 @@ func TestBulkIndexer(t *testing.T) {
 
 			itemCount := 1_000
 			generateLoad(itemCount)
+
+			// All items should be successfully flushed
+
 			uncompressed := indexer.UncompressedLen()
 			uncompressedDocSize := uncompressed / itemCount
 			stat, err := indexer.Flush(context.Background())
@@ -119,7 +122,7 @@ func TestBulkIndexer(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
 			require.Equal(t, uncompressedSize, indexer.BytesUncompFlushed())
-			// no documents to retry so buffer is empty
+			// no documents to retry so buffer should be empty
 			require.Equal(t, 0, indexer.Len())
 			require.Equal(t, 0, indexer.UncompressedLen())
 		})
