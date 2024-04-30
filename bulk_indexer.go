@@ -78,7 +78,6 @@ type BulkIndexer struct {
 	itemsAdded         int
 	bytesFlushed       int
 	bytesUncompFlushed int
-	pendingUncomBytes  int
 	jsonw              fastjson.Writer
 	writer             *countWriter
 	gzipw              *gzip.Writer
@@ -218,7 +217,6 @@ func (b *BulkIndexer) Reset() {
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
 	b.writer.count = 0
-	b.pendingUncomBytes = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -236,11 +234,8 @@ func (b *BulkIndexer) Len() int {
 }
 
 // UncompressedLen returns the number of uncompressed buffered bytes.
-// `pendingUncomBytes` holds the number of uncompressed buffered bytes
-// written for a retry from the previous Flush.
-// if retry is disabled, it is always zero.
 func (b *BulkIndexer) UncompressedLen() int {
-	return b.writer.count + b.pendingUncomBytes
+	return b.writer.count
 }
 
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
@@ -331,7 +326,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
-	bytesUncompFlushed := b.writer.count + b.pendingUncomBytes
+	bytesUncompFlushed := b.writer.count
 	res, err := req.Do(ctx, b.config.Client)
 	if err != nil {
 		b.resetBuf()
@@ -497,11 +492,6 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		if len(tmp) > 0 {
 			resp.FailedDocs = tmp
 		}
-
-		// record uncompressed bytes written to b.buf
-		// this should be added to the bytesUncompFlushed on next flush
-		b.pendingUncomBytes = b.writer.count
-		b.writer.count = 0
 	}
 
 	return resp, nil
