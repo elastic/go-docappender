@@ -86,7 +86,8 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 	return indexed, result
 }
 
-// DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
+// DecodeBulkRequestWithStats decodes a /_bulk request's body, returning the decoded documents
+// and a response body and stats about request.
 func DecodeBulkRequestWithStats(r *http.Request) (
 	docs [][]byte,
 	res esutil.BulkIndexerResponse,
@@ -132,7 +133,7 @@ func DecodeBulkRequestWithStats(r *http.Request) (
 		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
 	}
-	return indexed, result, RequestStats{int64(cr.count)}
+	return indexed, result, RequestStats{int64(cr.bytesRead)}
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
@@ -193,14 +194,14 @@ func AssertOTelMetrics(t testing.TB, ms []metricdata.Metrics, assert func(m metr
 
 // helper reader to keep track of the bytes read by ReadCloser
 type countReader struct {
-	count int
+	bytesRead int
 	io.ReadCloser
 }
 
 // Read implements the [io.Reader] interface.
 func (c *countReader) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	c.count += n
+	c.bytesRead += n
 	return n, err
 }
 
