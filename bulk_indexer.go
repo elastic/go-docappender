@@ -73,6 +73,8 @@ type BulkIndexerConfig struct {
 	Pipeline string
 }
 
+// BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
+// by multiple goroutines.
 type BulkIndexer struct {
 	config             BulkIndexerConfig
 	itemsAdded         int
@@ -174,6 +176,7 @@ func (cw *countWriter) Write(p []byte) (int, error) {
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
+// The returned BulkIndexer is NOT safe for concurrent use by multiple goroutines.
 func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	if cfg.Client == nil {
 		return nil, errors.New("client is nil")
