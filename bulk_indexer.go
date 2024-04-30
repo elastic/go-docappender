@@ -163,12 +163,12 @@ func init() {
 }
 
 type countWriter struct {
-	count int
+	bytesWritten int
 	io.Writer
 }
 
 func (cw *countWriter) Write(p []byte) (int, error) {
-	cw.count += len(p)
+	cw.bytesWritten += len(p)
 	return cw.Writer.Write(p)
 }
 
@@ -216,7 +216,7 @@ func (b *BulkIndexer) Reset() {
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
-	b.writer.count = 0
+	b.writer.bytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -235,7 +235,7 @@ func (b *BulkIndexer) Len() int {
 
 // UncompressedLen returns the number of uncompressed buffered bytes.
 func (b *BulkIndexer) UncompressedLen() int {
-	return b.writer.count
+	return b.writer.bytesWritten
 }
 
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
@@ -243,8 +243,8 @@ func (b *BulkIndexer) BytesFlushed() int {
 	return b.bytesFlushed
 }
 
-// BytesUncompFlushed returns the number of uncompressed bytes flushed by the bulk indexer.
-func (b *BulkIndexer) BytesUncompFlushed() int {
+// BytesUncompressedFlushed returns the number of uncompressed bytes flushed by the bulk indexer.
+func (b *BulkIndexer) BytesUncompressedFlushed() int {
 	return b.bytesUncompFlushed
 }
 
@@ -287,7 +287,6 @@ func (b *BulkIndexer) writeMeta(index, documentID string) {
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
 func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
-
 	if b.itemsAdded == 0 {
 		return BulkIndexerResponseStat{}, nil
 	}
@@ -326,7 +325,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
-	bytesUncompFlushed := b.writer.count
+	bytesUncompFlushed := b.writer.bytesWritten
 	res, err := req.Do(ctx, b.config.Client)
 	if err != nil {
 		b.resetBuf()

@@ -44,7 +44,7 @@ func TestBulkIndexer(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			var esFailing atomic.Bool
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result, _ := docappendertest.DecodeBulkRequest(r)
+				_, result := docappendertest.DecodeBulkRequest(r)
 				if esFailing.Load() {
 					for _, itemsMap := range result.Items {
 						for k, item := range itemsMap {
@@ -81,13 +81,12 @@ func TestBulkIndexer(t *testing.T) {
 			generateLoad(itemCount)
 
 			// All items should be successfully flushed
-
 			uncompressed := indexer.UncompressedLen()
 			uncompressedDocSize := uncompressed / itemCount
 			stat, err := indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
-			require.Equal(t, uncompressed, indexer.BytesUncompFlushed())
+			require.Equal(t, uncompressed, indexer.BytesUncompressedFlushed())
 
 			// nothing is in the buffer if all succeeded
 			require.Equal(t, 0, indexer.Len())
@@ -106,12 +105,12 @@ func TestBulkIndexer(t *testing.T) {
 				require.Equal(t, int64(itemCount), stat.RetriedDocs)
 
 				// all the flushed bytes are now in the buffer again to be retried
-				require.Equal(t, indexer.UncompressedLen(), indexer.BytesUncompFlushed())
+				require.Equal(t, indexer.UncompressedLen(), indexer.BytesUncompressedFlushed())
 				// Generate more load, all these items should be enqueued for retries
 				generateLoad(10)
 				itemCount += 10
 				require.Equal(t, itemCount, indexer.Items())
-				expectedBufferedSize := indexer.BytesUncompFlushed() + (10 * uncompressedDocSize)
+				expectedBufferedSize := indexer.BytesUncompressedFlushed() + (10 * uncompressedDocSize)
 				require.Equal(t, expectedBufferedSize, indexer.UncompressedLen())
 			}
 
@@ -121,7 +120,7 @@ func TestBulkIndexer(t *testing.T) {
 			stat, err = indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
-			require.Equal(t, uncompressedSize, indexer.BytesUncompFlushed())
+			require.Equal(t, uncompressedSize, indexer.BytesUncompressedFlushed())
 			// no documents to retry so buffer should be empty
 			require.Equal(t, 0, indexer.Len())
 			require.Equal(t, 0, indexer.UncompressedLen())

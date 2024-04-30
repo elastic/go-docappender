@@ -45,10 +45,52 @@ import (
 const TimestampFormat = "2006-01-02T15:04:05.000Z07:00"
 
 // DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
-func DecodeBulkRequest(r *http.Request) (
+func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
+	body := r.Body
+	switch r.Header.Get("Content-Encoding") {
+	case "gzip":
+		r, err := gzip.NewReader(body)
+		if err != nil {
+			panic(err)
+		}
+		defer r.Close()
+		body = r
+	}
+
+	scanner := bufio.NewScanner(body)
+	var indexed [][]byte
+	var result esutil.BulkIndexerResponse
+	for scanner.Scan() {
+		action := make(map[string]struct {
+			Index string `json:"_index"`
+		})
+		if err := json.NewDecoder(strings.NewReader(scanner.Text())).Decode(&action); err != nil {
+			panic(err)
+		}
+		var actionType string
+		for actionType = range action {
+		}
+		if !scanner.Scan() {
+			panic("expected source")
+		}
+
+		doc := append([]byte{}, scanner.Bytes()...)
+		if !json.Valid(doc) {
+			panic(fmt.Errorf("invalid JSON: %s", doc))
+		}
+		indexed = append(indexed, doc)
+
+		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
+		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
+	}
+	return indexed, result
+}
+
+// DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
+func DecodeBulkRequestWithStats(r *http.Request) (
 	docs [][]byte,
 	res esutil.BulkIndexerResponse,
-	rawRequestSize int64) {
+	stats RequestStats) {
 	body := r.Body
 	switch r.Header.Get("Content-Encoding") {
 	case "gzip":
@@ -90,7 +132,7 @@ func DecodeBulkRequest(r *http.Request) (
 		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
 	}
-	return indexed, result, int64(cr.count)
+	return indexed, result, RequestStats{int64(cr.count)}
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
@@ -160,4 +202,8 @@ func (c *countReader) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
 	c.count += n
 	return n, err
+}
+
+type RequestStats struct {
+	UncompressedBytes int64
 }
