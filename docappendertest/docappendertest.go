@@ -46,43 +46,7 @@ const TimestampFormat = "2006-01-02T15:04:05.000Z07:00"
 
 // DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
 func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
-	body := r.Body
-	switch r.Header.Get("Content-Encoding") {
-	case "gzip":
-		r, err := gzip.NewReader(body)
-		if err != nil {
-			panic(err)
-		}
-		defer r.Close()
-		body = r
-	}
-
-	scanner := bufio.NewScanner(body)
-	var indexed [][]byte
-	var result esutil.BulkIndexerResponse
-	for scanner.Scan() {
-		action := make(map[string]struct {
-			Index string `json:"_index"`
-		})
-		if err := json.NewDecoder(strings.NewReader(scanner.Text())).Decode(&action); err != nil {
-			panic(err)
-		}
-		var actionType string
-		for actionType = range action {
-		}
-		if !scanner.Scan() {
-			panic("expected source")
-		}
-
-		doc := append([]byte{}, scanner.Bytes()...)
-		if !json.Valid(doc) {
-			panic(fmt.Errorf("invalid JSON: %s", doc))
-		}
-		indexed = append(indexed, doc)
-
-		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
-		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
-	}
+	indexed, result, _ := DecodeBulkRequestWithStats(r)
 	return indexed, result
 }
 

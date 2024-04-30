@@ -423,7 +423,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					if len(buf) == 0 {
 						n, err := gr.Read(buf[:cap(buf)])
 						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from uncompressed buffer: %w", err)
+							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
 						}
 						buf = buf[:n]
 					}
@@ -436,7 +436,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						seen += newlines
 						n, err := gr.Read(buf[:cap(buf)])
 						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from uncompressed buffer: %w", err)
+							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
 						}
 						buf = buf[:n]
 						newlines = bytes.Count(buf, []byte{'\n'})
@@ -455,7 +455,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 							seen += newlines
 							n, err := gr.Read(buf[:cap(buf)])
 							if err != nil && err != io.EOF {
-								return resp, fmt.Errorf("failed to read from uncompressed buffer: %w", err)
+								return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
 							}
 							buf = buf[:n]
 							newlines = bytes.Count(buf, []byte{'\n'})
