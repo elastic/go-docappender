@@ -82,9 +82,16 @@ func TestBulkIndexer(t *testing.T) {
 			generateLoad(itemCount)
 
 			// All items should be successfully flushed
+			uncompressed := indexer.UncompressedLen()
+			uncompressedDocSize := uncompressed / itemCount
 			stat, err := indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
+			require.Equal(t, uncompressed, indexer.BytesUncompressedFlushed())
+
+			// nothing is in the buffer if all succeeded
+			require.Equal(t, 0, indexer.Len())
+			require.Equal(t, 0, indexer.UncompressedLen())
 
 			// Simulate ES failure, all items should be enqueued for retries
 			esFailing.Store(true)
@@ -98,17 +105,26 @@ func TestBulkIndexer(t *testing.T) {
 				require.Equal(t, itemCount, len(stat.FailedDocs))
 				require.Equal(t, int64(itemCount), stat.RetriedDocs)
 
+				// all the flushed bytes are now in the buffer again to be retried
+				require.Equal(t, indexer.UncompressedLen(), indexer.BytesUncompressedFlushed())
 				// Generate more load, all these items should be enqueued for retries
 				generateLoad(10)
 				itemCount += 10
 				require.Equal(t, itemCount, indexer.Items())
+				expectedBufferedSize := indexer.BytesUncompressedFlushed() + (10 * uncompressedDocSize)
+				require.Equal(t, expectedBufferedSize, indexer.UncompressedLen())
 			}
 
+			uncompressedSize := indexer.UncompressedLen()
 			// Recover ES and ensure all items are indexed
 			esFailing.Store(false)
 			stat, err = indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
+			require.Equal(t, uncompressedSize, indexer.BytesUncompressedFlushed())
+			// no documents to retry so buffer should be empty
+			require.Equal(t, 0, indexer.Len())
+			require.Equal(t, 0, indexer.UncompressedLen())
 		})
 	}
 }

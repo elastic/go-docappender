@@ -76,15 +76,16 @@ type BulkIndexerConfig struct {
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
 type BulkIndexer struct {
-	config       BulkIndexerConfig
-	itemsAdded   int
-	bytesFlushed int
-	jsonw        fastjson.Writer
-	writer       io.Writer
-	gzipw        *gzip.Writer
-	copyBuf      []byte
-	buf          bytes.Buffer
-	retryCounts  map[int]int
+	config             BulkIndexerConfig
+	itemsAdded         int
+	bytesFlushed       int
+	bytesUncompFlushed int
+	jsonw              fastjson.Writer
+	writer             *countWriter
+	gzipw              *gzip.Writer
+	copyBuf            []byte
+	buf                bytes.Buffer
+	retryCounts        map[int]int
 }
 
 type BulkIndexerResponseStat struct {
@@ -163,6 +164,16 @@ func init() {
 	})
 }
 
+type countWriter struct {
+	bytesWritten int
+	io.Writer
+}
+
+func (cw *countWriter) Write(p []byte) (int, error) {
+	cw.bytesWritten += len(p)
+	return cw.Writer.Write(p)
+}
+
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 // The returned BulkIndexer is NOT safe for concurrent use by multiple goroutines.
@@ -188,23 +199,27 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	if len(b.config.RetryOnDocumentStatus) == 0 {
 		b.config.RetryOnDocumentStatus = []int{http.StatusTooManyRequests}
 	}
-
+	var writer io.Writer
 	if cfg.CompressionLevel != gzip.NoCompression {
 		b.gzipw, _ = gzip.NewWriterLevel(&b.buf, cfg.CompressionLevel)
-		b.writer = b.gzipw
+		writer = b.gzipw
 	} else {
-		b.writer = &b.buf
+		writer = &b.buf
 	}
+	b.writer = &countWriter{0, writer}
 	return b, nil
 }
 
 // Reset resets bulk indexer, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
+	b.bytesUncompFlushed = 0
 }
 
+// resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
+	b.writer.bytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -221,9 +236,19 @@ func (b *BulkIndexer) Len() int {
 	return b.buf.Len()
 }
 
+// UncompressedLen returns the number of uncompressed buffered bytes.
+func (b *BulkIndexer) UncompressedLen() int {
+	return b.writer.bytesWritten
+}
+
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
 func (b *BulkIndexer) BytesFlushed() int {
 	return b.bytesFlushed
+}
+
+// BytesUncompressedFlushed returns the number of uncompressed bytes flushed by the bulk indexer.
+func (b *BulkIndexer) BytesUncompressedFlushed() int {
+	return b.bytesUncompFlushed
 }
 
 type BulkIndexerItem struct {
@@ -303,6 +328,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
+	bytesUncompFlushed := b.writer.bytesWritten
 	res, err := req.Do(ctx, b.config.Client)
 	if err != nil {
 		b.resetBuf()
@@ -317,6 +343,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
+	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
