@@ -25,6 +25,7 @@ import (
 	"math"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -383,6 +384,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		if info.Status >= 500 {
 			serverFailed++
+		}
+		if !a.config.CaptureFullErrorReason {
+			// Match Elasticsearch field mapper field value:
+			// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
+			// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
+			info.Error.Reason, _, _ = strings.Cut(info.Error.Reason, ". Preview")
 		}
 		info.Position = 0 // reset position so that the response item can be used as key in the map
 		failedCount[info]++

@@ -105,6 +105,10 @@ type Config struct {
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
 	MetricAttributes attribute.Set
+
+	// CaptureFullErrorReason enables the logger to collect the full error.reason
+	// returned by Elasticsearch when failed to index. default to false
+	CaptureFullErrorReason bool
 }
 
 // ScalingConfig holds the docappender autoscaling configuration.

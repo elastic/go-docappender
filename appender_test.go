@@ -592,30 +592,54 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
-	indexer, err := docappender.New(client, docappender.Config{
-		FlushBytes: 500,
-		Logger:     zap.New(core),
-	})
-	require.NoError(t, err)
-	defer indexer.Close(context.Background())
-
-	const N = 4
-	for i := 0; i < N; i++ {
-		addMinimalDoc(t, indexer, "logs-foo-testing")
+	tests := []struct {
+		name        string
+		fullReason  bool
+		evenMessage string
+		oddMessage  string
+	}{
+		{
+			name:        "strip preview of fields",
+			evenMessage: "failed to index documents in 'an_index' (error_type): error_reason_even",
+			oddMessage:  "failed to index documents in 'an_index' (error_type): error_reason_odd",
+		},
+		{
+			name:        "log full error reason",
+			fullReason:  true,
+			evenMessage: "failed to index documents in 'an_index' (error_type): error_reason_even. Preview of field's value: 'abc def ghi'",
+			oddMessage:  "failed to index documents in 'an_index' (error_type): error_reason_odd. Preview of field's value: some field value",
+		},
 	}
-	err = indexer.Close(context.Background())
-	assert.NoError(t, err)
 
-	entries := observed.FilterMessageSnippet("failed to index").TakeAll()
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Message < entries[j].Message
-	})
-	require.Len(t, entries, N/2)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[0].Message)
-	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[1].Message)
-	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+			indexer, err := docappender.New(client, docappender.Config{
+				FlushBytes:             500,
+				Logger:                 zap.New(core),
+				CaptureFullErrorReason: tc.fullReason,
+			})
+			require.NoError(t, err)
+			defer indexer.Close(context.Background())
+
+			const N = 4
+			for i := 0; i < N; i++ {
+				addMinimalDoc(t, indexer, "logs-foo-testing")
+			}
+			err = indexer.Close(context.Background())
+			assert.NoError(t, err)
+
+			entries := observed.FilterMessageSnippet("failed to index").TakeAll()
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Message < entries[j].Message
+			})
+			require.Len(t, entries, N/2)
+			assert.Equal(t, tc.evenMessage, entries[0].Message)
+			assert.Equal(t, int64(2), entries[0].Context[0].Integer)
+			assert.Equal(t, tc.oddMessage, entries[1].Message)
+			assert.Equal(t, int64(2), entries[1].Context[0].Integer)
+		})
+	}
 }
 
 func TestAppenderRetryLimit(t *testing.T) {

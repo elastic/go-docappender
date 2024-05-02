@@ -25,7 +25,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -128,12 +127,7 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										// Match Elasticsearch field mapper field value:
-										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-										item.Error.Reason, _, _ = strings.Cut(
-											i.ReadString(), ". Preview",
-										)
+										item.Error.Reason = i.ReadString()
 									default:
 										i.Skip()
 									}
