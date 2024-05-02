@@ -28,14 +28,16 @@ type metrics struct {
 	bufferDuration metric.Float64Histogram
 	flushDuration  metric.Float64Histogram
 
-	bulkRequests          metric.Int64Counter
-	docsAdded             metric.Int64Counter
-	docsActive            metric.Int64UpDownCounter
-	docsIndexed           metric.Int64Counter
-	bytesTotal            metric.Int64Counter
-	availableBulkRequests metric.Int64UpDownCounter
-	activeCreated         metric.Int64Counter
-	activeDestroyed       metric.Int64Counter
+	bulkRequests           metric.Int64Counter
+	docsAdded              metric.Int64Counter
+	docsActive             metric.Int64UpDownCounter
+	docsIndexed            metric.Int64Counter
+	docsRetried            metric.Int64Counter
+	bytesTotal             metric.Int64Counter
+	bytesUncompressedTotal metric.Int64Counter
+	availableBulkRequests  metric.Int64UpDownCounter
+	activeCreated          metric.Int64Counter
+	activeDestroyed        metric.Int64Counter
 }
 
 type histogramMetric struct {
@@ -104,10 +106,21 @@ func newMetrics(cfg Config) (metrics, error) {
 			p:           &ms.docsIndexed,
 		},
 		{
+			name:        "elasticsearch.events.retried",
+			description: "The number of document retries. A single document may be retried more than once.",
+			p:           &ms.docsRetried,
+		},
+		{
 			name:        "elasticsearch.flushed.bytes",
 			description: "The total number of bytes written to the request body",
 			unit:        "by",
 			p:           &ms.bytesTotal,
+		},
+		{
+			name:        "elasticsearch.flushed.uncompressed.bytes",
+			description: "The total number of uncompressed bytes written to the request body",
+			unit:        "by",
+			p:           &ms.bytesUncompressedTotal,
 		},
 		{
 			name:        "elasticsearch.indexer.created",

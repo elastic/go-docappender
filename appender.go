@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
@@ -60,18 +60,19 @@ var (
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
 	// legacy metrics for Stats()
-	bulkRequests          int64
-	docsAdded             int64
-	docsActive            int64
-	docsFailed            int64
-	docsFailedClient      int64
-	docsFailedServer      int64
-	docsIndexed           int64
-	tooManyRequests       int64
-	bytesTotal            int64
-	availableBulkRequests int64
-	activeCreated         int64
-	activeDestroyed       int64
+	bulkRequests           int64
+	docsAdded              int64
+	docsActive             int64
+	docsFailed             int64
+	docsFailedClient       int64
+	docsFailedServer       int64
+	docsIndexed            int64
+	tooManyRequests        int64
+	bytesTotal             int64
+	bytesUncompressedTotal int64
+	availableBulkRequests  int64
+	activeCreated          int64
+	activeDestroyed        int64
 
 	scalingInfo atomic.Value
 
@@ -87,7 +88,12 @@ type Appender struct {
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
-func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
+// It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
+func New(client esapi.Transport, cfg Config) (*Appender, error) {
+	if client == nil {
+		return nil, errors.New("client is nil")
+	}
+
 	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
 		return nil, fmt.Errorf(
 			"expected CompressionLevel in range [-1,9], got %d",
@@ -141,7 +147,17 @@ func New(client *elasticsearch.Client, cfg Config) (*Appender, error) {
 	}
 	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- NewBulkIndexer(client, cfg.CompressionLevel, cfg.MaxDocumentRetries)
+		bi, err := NewBulkIndexer(BulkIndexerConfig{
+			Client:                client,
+			MaxDocumentRetries:    cfg.MaxDocumentRetries,
+			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
+			CompressionLevel:      cfg.CompressionLevel,
+			Pipeline:              cfg.Pipeline,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
+		}
+		available <- bi
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -211,19 +227,20 @@ func (a *Appender) Close(ctx context.Context) error {
 // Stats returns the bulk indexing stats.
 func (a *Appender) Stats() Stats {
 	return Stats{
-		Added:                 atomic.LoadInt64(&a.docsAdded),
-		Active:                atomic.LoadInt64(&a.docsActive),
-		BulkRequests:          atomic.LoadInt64(&a.bulkRequests),
-		Failed:                atomic.LoadInt64(&a.docsFailed),
-		FailedClient:          atomic.LoadInt64(&a.docsFailedClient),
-		FailedServer:          atomic.LoadInt64(&a.docsFailedServer),
-		Indexed:               atomic.LoadInt64(&a.docsIndexed),
-		TooManyRequests:       atomic.LoadInt64(&a.tooManyRequests),
-		BytesTotal:            atomic.LoadInt64(&a.bytesTotal),
-		AvailableBulkRequests: atomic.LoadInt64(&a.availableBulkRequests),
-		IndexersActive:        a.scalingInformation().activeIndexers,
-		IndexersCreated:       atomic.LoadInt64(&a.activeCreated),
-		IndexersDestroyed:     atomic.LoadInt64(&a.activeDestroyed),
+		Added:                  atomic.LoadInt64(&a.docsAdded),
+		Active:                 atomic.LoadInt64(&a.docsActive),
+		BulkRequests:           atomic.LoadInt64(&a.bulkRequests),
+		Failed:                 atomic.LoadInt64(&a.docsFailed),
+		FailedClient:           atomic.LoadInt64(&a.docsFailedClient),
+		FailedServer:           atomic.LoadInt64(&a.docsFailedServer),
+		Indexed:                atomic.LoadInt64(&a.docsIndexed),
+		TooManyRequests:        atomic.LoadInt64(&a.tooManyRequests),
+		BytesTotal:             atomic.LoadInt64(&a.bytesTotal),
+		BytesUncompressedTotal: atomic.LoadInt64(&a.bytesUncompressedTotal),
+		AvailableBulkRequests:  atomic.LoadInt64(&a.availableBulkRequests),
+		IndexersActive:         a.scalingInformation().activeIndexers,
+		IndexersCreated:        atomic.LoadInt64(&a.activeCreated),
+		IndexersDestroyed:      atomic.LoadInt64(&a.activeDestroyed),
 	}
 }
 
@@ -317,6 +334,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
 		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
 	}
+	// Record the BulkIndexer uncompressed bytes written to the buffer
+	// as the bytesUncompressedTotal metric after the request has been flushed.
+	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
+		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
+	}
 	if err != nil {
 		defer a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 		atomic.AddInt64(&a.docsFailed, int64(n))
@@ -377,6 +399,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	if docsFailed > 0 {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
+	}
+	if resp.RetriedDocs > 0 {
+		a.addCount(resp.RetriedDocs,
+			nil,
+			a.metrics.docsRetried,
+		)
 	}
 	if docsIndexed > 0 {
 		a.addCount(docsIndexed,
@@ -720,6 +748,11 @@ type Stats struct {
 	// This implementation differs from the previous number reported by libbeat
 	// which counts bytes at the transport level.
 	BytesTotal int64
+
+	// BytesUncompressedTotal represents the total number of bytes written to
+	// the request body before compression.
+	// The number of bytes written will be equal to BytesTotal if compression is disabled.
+	BytesUncompressedTotal int64
 
 	// AvailableBulkRequests represents the number of bulk indexers
 	// available for making bulk index requests.
