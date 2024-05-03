@@ -350,8 +350,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 		return resp, fmt.Errorf("flush failed: %s", res.String())
 	}
-	decoder := jsoniter.NewDecoder(res.Body)
-	if err := decoder.Decode(&resp); err != nil {
+	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 

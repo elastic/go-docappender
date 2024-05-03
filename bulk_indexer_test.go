@@ -129,7 +129,7 @@ func TestBulkIndexer(t *testing.T) {
 	}
 }
 
-func TestLogErrorReason(t *testing.T) {
+func TestRedactErrorReason(t *testing.T) {
 	errMsg := "error_reason_invalid. Preview of field's value: 'failed to parse value'"
 	tests := []struct {
 		name       string
@@ -181,5 +181,46 @@ func TestLogErrorReason(t *testing.T) {
 			require.Equal(t, 1, len(stat.FailedDocs))
 			require.Equal(t, tc.message, stat.FailedDocs[0].Error.Reason)
 		})
+	}
+}
+
+func BenchmarkRedaction(b *testing.B) {
+	errMsg := "error_reason_invalid. Preview of field's value: 'failed to parse value'"
+	client := docappendertest.NewMockElasticsearchClient(b, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		for _, itemsMap := range result.Items {
+			for k, item := range itemsMap {
+				result.HasErrors = true
+				item.Status = http.StatusBadRequest
+				item.Index = "an_index"
+				item.Error.Type = "error_type"
+				item.Error.Reason = errMsg
+				itemsMap[k] = item
+			}
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client:                 client,
+		CaptureFullErrorReason: false,
+	})
+	require.NoError(b, err)
+	generateLoad := func(count int) {
+		for i := 0; i < count; i++ {
+			require.NoError(b, indexer.Add(docappender.BulkIndexerItem{
+				Index: "testidx",
+				Body: newJSONReader(map[string]any{
+					"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+				}),
+			}))
+		}
+	}
+	for i := 0; i < b.N; i++ {
+		itemCount := 1_000
+		generateLoad(itemCount)
+		_, err := indexer.Flush(context.Background())
+		if err != nil {
+			b.FailNow()
+		}
 	}
 }

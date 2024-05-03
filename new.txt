@@ -1,0 +1,35 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/elastic/go-docappender/v2
+BenchmarkRedaction     	     297	   3822273 ns/op
+BenchmarkRedaction     	     308	   3938680 ns/op
+BenchmarkRedaction     	     312	   3821946 ns/op
+BenchmarkRedaction     	     312	   3828728 ns/op
+BenchmarkRedaction     	     312	   3814236 ns/op
+BenchmarkRedaction     	     308	   3820958 ns/op
+BenchmarkRedaction     	     312	   3862118 ns/op
+BenchmarkRedaction     	     310	   3921311 ns/op
+BenchmarkRedaction     	     292	   4029690 ns/op
+BenchmarkRedaction     	     285	   4193818 ns/op
+BenchmarkRedaction-2   	     290	   4138245 ns/op
+BenchmarkRedaction-2   	     301	   4007444 ns/op
+BenchmarkRedaction-2   	     300	   4033109 ns/op
+BenchmarkRedaction-2   	     298	   4022833 ns/op
+BenchmarkRedaction-2   	     285	   4107814 ns/op
+BenchmarkRedaction-2   	     296	   4080051 ns/op
+BenchmarkRedaction-2   	     296	   4052033 ns/op
+BenchmarkRedaction-2   	     296	   4027817 ns/op
+BenchmarkRedaction-2   	     295	   3972116 ns/op
+BenchmarkRedaction-2   	     314	   3841261 ns/op
+BenchmarkRedaction-4   	     322	   3723084 ns/op
+BenchmarkRedaction-4   	     322	   3711382 ns/op
+BenchmarkRedaction-4   	     319	   3705052 ns/op
+BenchmarkRedaction-4   	     324	   3719619 ns/op
+BenchmarkRedaction-4   	     324	   3720388 ns/op
+BenchmarkRedaction-4   	     324	   3784756 ns/op
+BenchmarkRedaction-4   	     324	   3756972 ns/op
+BenchmarkRedaction-4   	     297	   3721637 ns/op
+BenchmarkRedaction-4   	     321	   3720482 ns/op
+BenchmarkRedaction-4   	     322	   3728986 ns/op
+PASS
+ok  	github.com/elastic/go-docappender/v2	48.142s
