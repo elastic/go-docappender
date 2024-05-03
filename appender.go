@@ -25,7 +25,6 @@ import (
 	"math"
 	"net/http"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,11 +148,12 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	available := make(chan *BulkIndexer, cfg.MaxRequests)
 	for i := 0; i < cfg.MaxRequests; i++ {
 		bi, err := NewBulkIndexer(BulkIndexerConfig{
-			Client:                client,
-			MaxDocumentRetries:    cfg.MaxDocumentRetries,
-			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
-			CompressionLevel:      cfg.CompressionLevel,
-			Pipeline:              cfg.Pipeline,
+			Client:                 client,
+			MaxDocumentRetries:     cfg.MaxDocumentRetries,
+			RetryOnDocumentStatus:  cfg.RetryOnDocumentStatus,
+			CompressionLevel:       cfg.CompressionLevel,
+			Pipeline:               cfg.Pipeline,
+			CaptureFullErrorReason: cfg.CaptureFullErrorReason,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
@@ -384,12 +384,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		if info.Status >= 500 {
 			serverFailed++
-		}
-		if !a.config.CaptureFullErrorReason {
-			// Match Elasticsearch field mapper field value:
-			// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-			// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-			info.Error.Reason, _, _ = strings.Cut(info.Error.Reason, ". Preview")
 		}
 		info.Position = 0 // reset position so that the response item can be used as key in the map
 		failedCount[info]++
