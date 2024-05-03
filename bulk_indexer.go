@@ -102,14 +102,13 @@ type BulkIndexerResponseItem struct {
 	Position int
 
 	Error struct {
-		Error
-		CausedBy Error `json:"error,omitempty"`
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+		Cause  struct {
+			Type   string `json:"type"`
+			Reason string `json:"reason"`
+		} `json:"caused_by"`
 	} `json:"error,omitempty"`
-}
-
-type Error struct {
-	Type   string `json:"type"`
-	Reason string `json:"reason"`
 }
 
 func init() {
@@ -143,9 +142,9 @@ func init() {
 										i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 											switch s {
 											case "type":
-												item.Error.CausedBy.Type = i.ReadString()
+												item.Error.Cause.Type = i.ReadString()
 											case "reason":
-												item.Error.CausedBy.Reason = i.ReadString()
+												item.Error.Cause.Reason = i.ReadString()
 											default:
 												i.Skip()
 											}

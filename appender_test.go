@@ -586,6 +586,8 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 			} else {
 				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
 			}
+			itemResp.Error.Cause.Type = "parse_error"
+			itemResp.Error.Cause.Reason = "boo"
 			item["create"] = itemResp
 		}
 		result.HasErrors = true
@@ -607,14 +609,15 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	err = indexer.Close(context.Background())
 	assert.NoError(t, err)
 
+	fmt.Println(observed.All())
 	entries := observed.FilterMessageSnippet("failed to index").TakeAll()
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Message < entries[j].Message
 	})
 	require.Len(t, entries, N/2)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[0].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even, caused_by (parse_error): boo", entries[0].Message)
 	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[1].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd, caused_by (parse_error): boo", entries[1].Message)
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
 }
 

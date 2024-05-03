@@ -391,9 +391,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 	}
 	for key, count := range failedCount {
-		logger.Error(fmt.Sprintf("failed to index documents in '%s' (%s): %s",
+		logger.Error(fmt.Sprintf("failed to index documents in '%s' (%s): %s, caused_by (%s): %s",
 			key.Index, key.Error.Type, key.Error.Reason,
-		), zap.Int("documents", count))
+			key.Error.Cause.Type, key.Error.Cause.Reason),
+			zap.Int("documents", count))
 	}
 	if docsFailed > 0 {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
