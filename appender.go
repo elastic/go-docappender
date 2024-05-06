@@ -374,7 +374,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	docsFailed = int64(len(resp.FailedDocs))
 	totalFlushed := docsFailed + docsIndexed
-	defer a.addUpDownCount(-totalFlushed, &a.docsActive, a.metrics.docsActive)
+	a.addUpDownCount(-totalFlushed, &a.docsActive, a.metrics.docsActive)
 	for _, info := range resp.FailedDocs {
 		if info.Status >= 400 && info.Status < 500 {
 			if info.Status == http.StatusTooManyRequests {
