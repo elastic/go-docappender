@@ -340,7 +340,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
 	}
 	if err != nil {
-		defer a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
+		a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
