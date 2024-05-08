@@ -303,7 +303,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if n == 0 {
 		return nil
 	}
-	defer a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
@@ -341,6 +340,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
 	}
 	if err != nil {
+		a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
@@ -373,6 +373,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		failedCount = make(map[BulkIndexerResponseItem]int, len(resp.FailedDocs))
 	}
 	docsFailed = int64(len(resp.FailedDocs))
+	totalFlushed := docsFailed + docsIndexed
+	a.addUpDownCount(-totalFlushed, &a.docsActive, a.metrics.docsActive)
 	for _, info := range resp.FailedDocs {
 		if info.Status >= 400 && info.Status < 500 {
 			if info.Status == http.StatusTooManyRequests {
