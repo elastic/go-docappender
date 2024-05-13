@@ -89,9 +89,11 @@ type BulkIndexer struct {
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed     int64
-	RetriedDocs int64
-	FailedDocs  []BulkIndexerResponseItem
+	Indexed                      int64
+	RetriedDocs                  int64
+	FailedDocs                   []BulkIndexerResponseItem
+	FlushedSucceeded             int64
+	FlushedUncompressedSucceeded int64
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -164,14 +166,33 @@ func init() {
 	})
 }
 
+// writer.Write doesn't return the compressed bytes. there was an error in my thinking.
 type countWriter struct {
-	bytesWritten int
+	rawBytesWritten []int // raw bytes delivered to the writer.Write
+	bytesWritten    []int // bytes written, will be compressed bytes if compressor was used
 	io.Writer
 }
 
 func (cw *countWriter) Write(p []byte) (int, error) {
-	cw.bytesWritten += len(p)
-	return cw.Writer.Write(p)
+	// TODO: find the optimal number for the slices
+	i := len(cw.rawBytesWritten) - 1
+	if i < 0 {
+		cw.rawBytesWritten = append(cw.rawBytesWritten, 0)
+		i = 0
+	}
+	bytesWritten, err := cw.Writer.Write(p)
+	cw.rawBytesWritten[i] += bytesWritten
+
+	// newline indicating the end of document
+	if len(p) == 1 {
+		cw.rawBytesWritten = append(cw.rawBytesWritten, 0)
+	}
+	return bytesWritten, err
+}
+
+func (cw *countWriter) reset() {
+	cw.rawBytesWritten = make([]int, 0, 100)
+	cw.bytesWritten = make([]int, 0, 100)
 }
 
 // NewBulkIndexer returns a bulk indexer that issues bulk requests to Elasticsearch.
@@ -206,7 +227,11 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	} else {
 		writer = &b.buf
 	}
-	b.writer = &countWriter{0, writer}
+	b.writer = &countWriter{
+		make([]int, 0, 100),
+		make([]int, 0, 100),
+		writer,
+	}
 	return b, nil
 }
 
@@ -219,7 +244,7 @@ func (b *BulkIndexer) Reset() {
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
-	b.writer.bytesWritten = 0
+	// b.writer.rawBytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -238,7 +263,11 @@ func (b *BulkIndexer) Len() int {
 
 // UncompressedLen returns the number of uncompressed buffered bytes.
 func (b *BulkIndexer) UncompressedLen() int {
-	return b.writer.bytesWritten
+	length := 0
+	for _, b := range b.writer.rawBytesWritten {
+		length += b
+	}
+	return length
 }
 
 // BytesFlushed returns the number of bytes flushed by the bulk indexer.
@@ -259,6 +288,7 @@ type BulkIndexerItem struct {
 
 // Add encodes an item in the buffer.
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
+	b.writer.bytesWritten = append(b.writer.bytesWritten, 0)
 	b.writeMeta(item.Index, item.DocumentID)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
@@ -267,6 +297,7 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
 	b.itemsAdded++
+	b.writer.bytesWritten[len(b.writer.bytesWritten)-1] = b.buf.Len()
 	return nil
 }
 
@@ -328,7 +359,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	bytesFlushed := b.buf.Len()
-	bytesUncompFlushed := b.writer.bytesWritten
+	bytesUncompFlushed := b.UncompressedLen()
 	res, err := req.Do(ctx, b.config.Client)
 	if err != nil {
 		b.resetBuf()
@@ -355,6 +386,32 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
+
+	// Count succeeded docs
+	if len(resp.FailedDocs) > 0 {
+		lastFailedPositionIdx := 0
+
+		for i := 0; i < len(b.writer.rawBytesWritten); i++ {
+			if i == resp.FailedDocs[lastFailedPositionIdx].Position {
+				if lastFailedPositionIdx < len(resp.FailedDocs)-1 {
+					lastFailedPositionIdx += 1
+				}
+				continue
+			}
+			if len(b.writer.rawBytesWritten) > i {
+				resp.FlushedUncompressedSucceeded += int64(b.writer.rawBytesWritten[i])
+			}
+
+			if len(b.writer.bytesWritten) > i {
+				resp.FlushedSucceeded += int64(b.writer.bytesWritten[i])
+			}
+		}
+	} else {
+		resp.FlushedUncompressedSucceeded = int64(b.bytesUncompFlushed)
+		resp.FlushedSucceeded = int64(b.bytesFlushed)
+	}
+
+	b.writer.reset()
 
 	// Only run the retry logic if document retries are enabled
 	if b.config.MaxDocumentRetries > 0 {
