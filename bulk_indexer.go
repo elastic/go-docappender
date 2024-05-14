@@ -491,9 +491,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 		}
 
-		if len(tmp) > 0 {
-			resp.FailedDocs = tmp
-		}
+		resp.FailedDocs = tmp
 	}
 
 	return resp, nil
