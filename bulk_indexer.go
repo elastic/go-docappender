@@ -92,7 +92,6 @@ type BulkIndexerResponseStat struct {
 	Indexed                      int64
 	RetriedDocs                  int64
 	FailedDocs                   []BulkIndexerResponseItem
-	FlushedSucceeded             int64
 	FlushedUncompressedSucceeded int64
 }
 
@@ -168,30 +167,28 @@ func init() {
 
 // writer.Write doesn't return the compressed bytes. there was an error in my thinking.
 type countWriter struct {
-	rawBytesWritten []int // raw bytes delivered to the writer.Write
-	bytesWritten    []int // bytes written, will be compressed bytes if compressor was used
+	bytesWritten []int // uncompressed bytes written for each documents
 	io.Writer
 }
 
 func (cw *countWriter) Write(p []byte) (int, error) {
 	// TODO: find the optimal number for the slices
-	i := len(cw.rawBytesWritten) - 1
+	i := len(cw.bytesWritten) - 1
 	if i < 0 {
-		cw.rawBytesWritten = append(cw.rawBytesWritten, 0)
+		cw.bytesWritten = append(cw.bytesWritten, 0)
 		i = 0
 	}
 	bytesWritten, err := cw.Writer.Write(p)
-	cw.rawBytesWritten[i] += bytesWritten
+	cw.bytesWritten[i] += bytesWritten
 
 	// newline indicating the end of document
 	if len(p) == 1 {
-		cw.rawBytesWritten = append(cw.rawBytesWritten, 0)
+		cw.bytesWritten = append(cw.bytesWritten, 0)
 	}
 	return bytesWritten, err
 }
 
 func (cw *countWriter) reset() {
-	cw.rawBytesWritten = make([]int, 0, 100)
 	cw.bytesWritten = make([]int, 0, 100)
 }
 
@@ -229,7 +226,6 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	}
 	b.writer = &countWriter{
 		make([]int, 0, 100),
-		make([]int, 0, 100),
 		writer,
 	}
 	return b, nil
@@ -244,7 +240,6 @@ func (b *BulkIndexer) Reset() {
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
-	// b.writer.rawBytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
@@ -264,7 +259,7 @@ func (b *BulkIndexer) Len() int {
 // UncompressedLen returns the number of uncompressed buffered bytes.
 func (b *BulkIndexer) UncompressedLen() int {
 	length := 0
-	for _, b := range b.writer.rawBytesWritten {
+	for _, b := range b.writer.bytesWritten {
 		length += b
 	}
 	return length
@@ -288,7 +283,6 @@ type BulkIndexerItem struct {
 
 // Add encodes an item in the buffer.
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
-	b.writer.bytesWritten = append(b.writer.bytesWritten, 0)
 	b.writeMeta(item.Index, item.DocumentID)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
@@ -297,7 +291,6 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
 	b.itemsAdded++
-	b.writer.bytesWritten[len(b.writer.bytesWritten)-1] = b.buf.Len()
 	return nil
 }
 
@@ -391,24 +384,19 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	if len(resp.FailedDocs) > 0 {
 		lastFailedPositionIdx := 0
 
-		for i := 0; i < len(b.writer.rawBytesWritten); i++ {
+		for i := 0; i < len(b.writer.bytesWritten); i++ {
 			if i == resp.FailedDocs[lastFailedPositionIdx].Position {
 				if lastFailedPositionIdx < len(resp.FailedDocs)-1 {
 					lastFailedPositionIdx += 1
 				}
 				continue
 			}
-			if len(b.writer.rawBytesWritten) > i {
-				resp.FlushedUncompressedSucceeded += int64(b.writer.rawBytesWritten[i])
-			}
-
 			if len(b.writer.bytesWritten) > i {
-				resp.FlushedSucceeded += int64(b.writer.bytesWritten[i])
+				resp.FlushedUncompressedSucceeded += int64(b.writer.bytesWritten[i])
 			}
 		}
 	} else {
 		resp.FlushedUncompressedSucceeded = int64(b.bytesUncompFlushed)
-		resp.FlushedSucceeded = int64(b.bytesFlushed)
 	}
 
 	b.writer.reset()

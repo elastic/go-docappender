@@ -337,7 +337,16 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// Record the BulkIndexer uncompressed bytes written to the buffer
 	// as the bytesUncompressedTotal metric after the request has been flushed.
 	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
+		a.addCount(resp.FlushedUncompressedSucceeded,
+			&a.bytesUncompressedTotal,
+			a.metrics.bytesUncompressedTotal,
+			metric.WithAttributes(attribute.String("outcome", "success")),
+		)
+		a.addCount(int64(flushed)-resp.FlushedUncompressedSucceeded,
+			&a.bytesUncompressedTotal,
+			a.metrics.bytesUncompressedTotal,
+			metric.WithAttributes(attribute.String("outcome", "failure")),
+		)
 	}
 	if err != nil {
 		a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)

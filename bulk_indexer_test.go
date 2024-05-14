@@ -175,10 +175,7 @@ func TestBulkIndexer(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount/2), stat.Indexed)
 			require.Equal(t, itemCount/2, len(stat.FailedDocs))
-			// compressed: less than total
-			// uncompressed: half of the total
 			require.Equal(t, int64(indexer.BytesUncompressedFlushed()/2), stat.FlushedUncompressedSucceeded)
-			require.LessOrEqual(t, stat.FlushedSucceeded, int64(indexer.BytesFlushed()))
 		}
 	})
 }

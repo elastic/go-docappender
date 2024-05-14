@@ -313,6 +313,29 @@ loop:
 			}
 		}
 	}
+	var flushedAsserted int
+	var fb int64
+	assertUncompressedFlushed := func(metric metricdata.Metrics, attrs attribute.Set) {
+		asserted.Add(1)
+		counter := metric.Data.(metricdata.Sum[int64])
+		for _, dp := range counter.DataPoints {
+			metricdatatest.AssertHasAttributes(t, dp, attrs.ToSlice()...)
+			status, exist := dp.Attributes.Value(attribute.Key("outcome"))
+			assert.True(t, exist)
+			switch status.AsString() {
+			case "success":
+				flushedAsserted++
+				fb += dp.Value
+			case "failure":
+				flushedAsserted++
+				fb += dp.Value
+			default:
+				assert.FailNow(t, "Unexpected metric with outcome: "+status.AsString())
+			}
+		}
+		assert.Equal(t, stats.BytesUncompressedTotal, bytesTotal)
+		assert.Equal(t, stats.BytesUncompressedTotal, fb)
+	}
 	// check the set of names and then check the counter or histogram
 	unexpectedMetrics := []string{}
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
@@ -332,7 +355,7 @@ loop:
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, stats.BytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
-			assertCounter(m, stats.BytesUncompressedTotal, indexerAttrs)
+			assertUncompressedFlushed(m, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -344,6 +367,7 @@ loop:
 	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, int64(8), asserted.Load())
 	assert.Equal(t, 3, processedAsserted)
+	assert.Equal(t, 2, flushedAsserted)
 
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
