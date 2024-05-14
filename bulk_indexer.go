@@ -89,10 +89,10 @@ type BulkIndexer struct {
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed                      int64
-	RetriedDocs                  int64
-	FailedDocs                   []BulkIndexerResponseItem
-	FlushedUncompressedSucceeded int64
+	Indexed                    int64
+	RetriedDocs                int64
+	FailedDocs                 []BulkIndexerResponseItem
+	FlushedUncompressedBytesOK int64
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -392,11 +392,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				continue
 			}
 			if len(b.writer.bytesWritten) > i {
-				resp.FlushedUncompressedSucceeded += int64(b.writer.bytesWritten[i])
+				resp.FlushedUncompressedBytesOK += int64(b.writer.bytesWritten[i])
 			}
 		}
 	} else {
-		resp.FlushedUncompressedSucceeded = int64(b.bytesUncompFlushed)
+		resp.FlushedUncompressedBytesOK = int64(b.bytesUncompFlushed)
 	}
 
 	b.writer.reset()

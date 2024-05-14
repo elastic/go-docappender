@@ -127,55 +127,45 @@ func TestBulkIndexer(t *testing.T) {
 			require.Equal(t, 0, indexer.UncompressedLen())
 		})
 	}
-	t.Run("stat", func(t *testing.T) {
-		for _, tc := range []struct {
-			Name             string
-			CompressionLevel int
-		}{
-			// {Name: "no_compression", CompressionLevel: gzip.NoCompression},
-			{Name: "default_compression", CompressionLevel: gzip.DefaultCompression},
-		} {
-			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result := docappendertest.DecodeBulkRequest(r)
-				for i, itemsMap := range result.Items {
-					// mark odd item as failed
-					if i%2 == 0 {
-						continue
-					}
-					for k, item := range itemsMap {
-						result.HasErrors = true
-						item.Status = http.StatusTooManyRequests
-						item.Error.Type = "simulated_es_error"
-						item.Error.Reason = "for testing"
-						itemsMap[k] = item
-					}
+	t.Run("flushed bytes with success", func(t *testing.T) {
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, result := docappendertest.DecodeBulkRequest(r)
+			for i, itemsMap := range result.Items {
+				// mark odd item as failed
+				if i%2 == 0 {
+					continue
 				}
-				json.NewEncoder(w).Encode(result)
-			})
-			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-				Client:             client,
-				MaxDocumentRetries: 0, // disable retry
-				CompressionLevel:   tc.CompressionLevel,
-			})
-			require.NoError(t, err)
-
-			generateLoad := func(count int) {
-				for i := 0; i < count; i++ {
-					require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-						Index: "testidx",
-						Body: newJSONReader(map[string]any{
-							"foo": "boo",
-						}),
-					}))
+				for k, item := range itemsMap {
+					result.HasErrors = true
+					item.Status = http.StatusTooManyRequests
+					item.Error.Type = "simulated_es_error"
+					item.Error.Reason = "for testing"
+					itemsMap[k] = item
 				}
 			}
-			itemCount := 100
-			generateLoad(itemCount)
-			stat, err := indexer.Flush(context.Background())
-			require.NoError(t, err)
-			require.Equal(t, int64(itemCount/2), stat.Indexed)
-			require.Equal(t, itemCount/2, len(stat.FailedDocs))
-			require.Equal(t, int64(indexer.BytesUncompressedFlushed()/2), stat.FlushedUncompressedSucceeded)
+			json.NewEncoder(w).Encode(result)
+		})
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client: client,
+		})
+		require.NoError(t, err)
+
+		generateLoad := func(count int) {
+			for i := 0; i < count; i++ {
+				require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"foo": "boo",
+					}),
+				}))
+			}
 		}
+		itemCount := 100
+		generateLoad(itemCount)
+		stat, err := indexer.Flush(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, int64(itemCount/2), stat.Indexed)
+		require.Equal(t, itemCount/2, len(stat.FailedDocs))
+		require.Equal(t, int64(indexer.BytesUncompressedFlushed()/2), stat.FlushedUncompressedBytesOK)
 	})
 }
