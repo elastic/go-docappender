@@ -102,7 +102,7 @@ func TestBulkIndexer(t *testing.T) {
 				stat, err := indexer.Flush(context.Background())
 				require.NoError(t, err)
 				require.Equal(t, int64(0), stat.Indexed)
-				require.Equal(t, itemCount, len(stat.FailedDocs))
+				require.Len(t, stat.FailedDocs, 0)
 				require.Equal(t, int64(itemCount), stat.RetriedDocs)
 
 				// all the flushed bytes are now in the buffer again to be retried

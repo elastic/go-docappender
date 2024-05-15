@@ -366,7 +366,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		return err
 	}
-	var docsFailed, docsIndexed, tooManyRequests, clientFailed, serverFailed int64
+	var (
+		docsFailed, docsIndexed,
+		// breakdown of failed docs:
+		tooManyRequests, // failed after document retries (if it applies) and final status is 429
+		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
+		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
+	)
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -401,6 +407,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		atomic.AddInt64(&a.docsFailed, docsFailed)
 	}
 	if resp.RetriedDocs > 0 {
+		// docs are scheduled to be retried but not yet failed due to retry limit
 		a.addCount(resp.RetriedDocs,
 			nil,
 			a.metrics.docsRetried,

@@ -491,9 +491,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 		}
 
-		if len(tmp) > 0 {
-			resp.FailedDocs = tmp
-		}
+		// FailedDocs contain responses of
+		// - non-retriable errors
+		// - retriable errors that reached the retry limit
+		resp.FailedDocs = tmp
 	}
 
 	return resp, nil
