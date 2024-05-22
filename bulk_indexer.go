@@ -71,6 +71,10 @@ type BulkIndexerConfig struct {
 	//
 	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
 	Pipeline string
+
+	// CaptureFullErrorReason enables the logger to collect the full error.reason
+	// returned by Elasticsearch when failed to index. default to false
+	CaptureFullErrorReason bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -128,12 +132,7 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										// Match Elasticsearch field mapper field value:
-										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-										item.Error.Reason, _, _ = strings.Cut(
-											i.ReadString(), ". Preview",
-										)
+										item.Error.Reason = i.ReadString()
 									default:
 										i.Skip()
 									}
@@ -351,9 +350,17 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 		return resp, fmt.Errorf("flush failed: %s", res.String())
 	}
-
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+
+	if !b.config.CaptureFullErrorReason {
+		for i, f := range resp.FailedDocs {
+			// Match Elasticsearch field mapper field value:
+			// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
+			// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
+			resp.FailedDocs[i].Error.Reason, _, _ = strings.Cut(f.Error.Reason, ". Preview")
+		}
 	}
 
 	// Only run the retry logic if document retries are enabled
