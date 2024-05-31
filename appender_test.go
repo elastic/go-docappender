@@ -563,11 +563,16 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 		for i, item := range result.Items {
 			itemResp := item["create"]
 			itemResp.Index = "an_index"
-			itemResp.Error.Type = "error_type"
-			if i%2 == 0 {
+			switch i % 3 {
+			case 0:
+				itemResp.Error.Type = "error_type"
 				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
-			} else {
+			case 1:
+				itemResp.Error.Type = "error_type"
 				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
+			case 2:
+				itemResp.Error.Type = "unavailable_shards_exception"
+				itemResp.Error.Reason = "this reason should not be logged"
 			}
 			item["create"] = itemResp
 		}
@@ -583,7 +588,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	const N = 4
+	const N = 3 * 2
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
@@ -599,6 +604,8 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
 	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[1].Message)
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[2].Message)
+	assert.Equal(t, int64(2), entries[2].Context[0].Integer)
 }
 
 func TestAppenderRetryLimit(t *testing.T) {

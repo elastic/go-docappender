@@ -117,6 +117,11 @@ func init() {
 							}
 							return true
 						})
+						// For unavailable_shards_exception, remove item.Error.Reason as it may contain sensitive request content.
+						if item.Error.Type == "unavailable_shards_exception" {
+							item.Error.Reason = ""
+						}
+
 						item.Position = idx
 						idx++
 						if item.Error.Type != "" || item.Status > 201 {
