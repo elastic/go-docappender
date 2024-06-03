@@ -737,7 +737,7 @@ type Stats struct {
 	// status_code >= 400 < 500, but not 429.
 	FailedClient int64
 
-	// FailedClient holds the number of indexing operations that failed with a
+	// FailedServer holds the number of indexing operations that failed with a
 	// status_code >= 500.
 	FailedServer int64
 
@@ -773,7 +773,7 @@ type Stats struct {
 	// created.
 	IndexersCreated int64
 
-	// Downscales represents the number of times an active indexer was destroyed.
+	// IndexersDestroyed represents the number of times an active indexer was destroyed.
 	IndexersDestroyed int64
 }
 
