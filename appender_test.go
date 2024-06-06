@@ -590,7 +590,7 @@ func TestAppenderFlushMetric(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	docs := 10
+	docs := 12
 	for i := 0; i < docs; i++ {
 		addMinimalDoc(t, indexer, fmt.Sprintf("logs-foo-testing-%d", i))
 	}
