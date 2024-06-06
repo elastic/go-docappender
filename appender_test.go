@@ -671,67 +671,60 @@ func TestAppenderFlushBytes(t *testing.T) {
 	}
 }
 
-func TestAppenderServerError(t *testing.T) {
-	var bytesTotal int64
-	var bytesUncompressedTotal int64
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		bytesTotal += r.ContentLength
-		_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
-		bytesUncompressedTotal += stat.UncompressedBytes
-		w.WriteHeader(http.StatusInternalServerError)
+func TestAppenderFlushRequestError(t *testing.T) {
+	test := func(t *testing.T, sc int, errMsg string) {
+		var bytesTotal int64
+		var bytesUncompressedTotal int64
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			bytesTotal += r.ContentLength
+			_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
+			bytesUncompressedTotal += stat.UncompressedBytes
+			w.WriteHeader(sc)
+		})
+		indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
+		require.NoError(t, err)
+		defer indexer.Close(context.Background())
+
+		addMinimalDoc(t, indexer, "logs-foo-testing")
+
+		// Closing the indexer flushes enqueued documents.
+		err = indexer.Close(context.Background())
+		require.EqualError(t, err, errMsg)
+		stats := indexer.Stats()
+		wantStats := docappender.Stats{
+			Added:                  1,
+			Active:                 0,
+			BulkRequests:           1,
+			Failed:                 1,
+			AvailableBulkRequests:  10,
+			BytesTotal:             bytesTotal,
+			BytesUncompressedTotal: bytesUncompressedTotal,
+		}
+		if sc >= 400 {
+			if sc == 429 {
+				wantStats.TooManyRequests = 1
+			} else {
+				if sc >= 500 {
+					wantStats.FailedServer = 1
+				} else {
+					wantStats.FailedClient = 1
+				}
+			}
+		}
+		assert.Equal(t, wantStats, stats)
+	}
+	t.Run("400", func(t *testing.T) {
+		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] ")
 	})
-	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
-	require.NoError(t, err)
-	defer indexer.Close(context.Background())
-
-	addMinimalDoc(t, indexer, "logs-foo-testing")
-
-	// Closing the indexer flushes enqueued documents.
-	err = indexer.Close(context.Background())
-	require.EqualError(t, err, "flush failed: [500 Internal Server Error] ")
-	stats := indexer.Stats()
-	assert.Equal(t, docappender.Stats{
-		Added:                  1,
-		Active:                 0,
-		BulkRequests:           1,
-		Failed:                 1,
-		AvailableBulkRequests:  10,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressedTotal,
-	}, stats)
-}
-
-func TestAppenderServerErrorTooManyRequests(t *testing.T) {
-	var bytesTotal int64
-	var bytesUncompressedTotal int64
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		// Set the r.ContentLength rather than sum it since 429s will be
-		// retried by the go-elasticsearch transport.
-		bytesTotal = r.ContentLength
-		_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
-		bytesUncompressedTotal = stat.UncompressedBytes
-		w.WriteHeader(http.StatusTooManyRequests)
+	t.Run("403", func(t *testing.T) {
+		test(t, http.StatusForbidden, "flush failed (403): [403 Forbidden] ")
 	})
-	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
-	require.NoError(t, err)
-	defer indexer.Close(context.Background())
-
-	addMinimalDoc(t, indexer, "logs-foo-testing")
-
-	// Closing the indexer flushes enqueued documents.
-	err = indexer.Close(context.Background())
-	require.EqualError(t, err, "flush failed: [429 Too Many Requests] ")
-	stats := indexer.Stats()
-	assert.Equal(t, docappender.Stats{
-		Added:                  1,
-		Active:                 0,
-		BulkRequests:           1,
-		Failed:                 1,
-		TooManyRequests:        1,
-		AvailableBulkRequests:  10,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressedTotal,
-	}, stats)
+	t.Run("429", func(t *testing.T) {
+		test(t, http.StatusTooManyRequests, "flush failed (429): [429 Too Many Requests] ")
+	})
+	t.Run("500", func(t *testing.T) {
+		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] ")
+	})
 }
 
 func TestAppenderIndexFailedLogging(t *testing.T) {
