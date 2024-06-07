@@ -93,6 +93,9 @@ type Config struct {
 	// RequireDataStream, If set to true, an index will be created only if a
 	// matching index template is found and it contains a data stream template.
 	// When true, `require_data_stream=true` is set in the bulk request.
+	// When false or not set, `require_data_stream` is not set in the bulk request.
+	// Which could cause a classic index to be created if no data stream template
+	// matches the index in the request.
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
