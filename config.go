@@ -90,10 +90,9 @@ type Config struct {
 	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
 	Pipeline string
 
-	// RequireDataStream forces the auto creation of the underlying index.
-	// If set to true, an index will be created only if a matching index
-	// template is found and it contains a data stream template. When true,
-	// `require_data_stream=true` is set in the bulk request.
+	// RequireDataStream, If set to true, an index will be created only if a
+	// matching index template is found and it contains a data stream template.
+	// When true, `require_data_stream=true` is set in the bulk request.
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
