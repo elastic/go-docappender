@@ -71,6 +71,14 @@ type BulkIndexerConfig struct {
 	//
 	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
 	Pipeline string
+
+	// RequireDataStream forces the auto creation of the underlying index.
+	// If set to true, an index will be created only if a matching index
+	// template is found and it contains a data stream template. When true,
+	// `require_data_stream=true` is set in the bulk request.
+	//
+	// RequireDataStream is disabled by default.
+	RequireDataStream bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -86,6 +94,7 @@ type BulkIndexer struct {
 	copyBuf            []byte
 	buf                bytes.Buffer
 	retryCounts        map[int]int
+	requireDataStream  bool
 }
 
 type BulkIndexerResponseStat struct {
@@ -195,8 +204,9 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	}
 
 	b := &BulkIndexer{
-		config:      cfg,
-		retryCounts: make(map[int]int),
+		config:            cfg,
+		retryCounts:       make(map[int]int),
+		requireDataStream: cfg.RequireDataStream,
 	}
 
 	// use a len check instead of a nil check because document level retries
@@ -327,6 +337,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		Header:     make(http.Header),
 		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
 		Pipeline:   b.config.Pipeline,
+	}
+	if b.requireDataStream {
+		req.RequireDataStream = &b.requireDataStream
 	}
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
