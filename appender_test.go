@@ -1350,6 +1350,36 @@ func TestAppenderPipeline(t *testing.T) {
 	assert.Equal(t, expected, actual)
 }
 
+func TestAppenderRequireDataStream(t *testing.T) {
+	const expected = "true"
+	var actual string
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		actual = r.URL.Query().Get("require_data_stream")
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval:     time.Minute,
+		RequireDataStream: true,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	err = indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+		"@timestamp":            time.Unix(123, 456789111).UTC().Format(docappendertest.TimestampFormat),
+		"data_stream.type":      "logs",
+		"data_stream.dataset":   "foo",
+		"data_stream.namespace": "testing",
+	}))
+	require.NoError(t, err)
+
+	// Closing the indexer flushes enqueued documents.
+	err = indexer.Close(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, expected, actual)
+}
+
 func TestAppenderScaling(t *testing.T) {
 	newIndexer := func(t *testing.T, cfg docappender.Config) *docappender.Appender {
 		t.Helper()

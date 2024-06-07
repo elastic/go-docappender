@@ -153,6 +153,7 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
 			CompressionLevel:      cfg.CompressionLevel,
 			Pipeline:              cfg.Pipeline,
+			RequireDataStream:     cfg.RequireDataStream,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
