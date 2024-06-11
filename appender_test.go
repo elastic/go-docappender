@@ -42,6 +42,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -1645,6 +1647,51 @@ func setGOMAXPROCS(t *testing.T, new int) {
 func TestAppenderTracing(t *testing.T) {
 	testAppenderTracing(t, 200, "success")
 	testAppenderTracing(t, 400, "failure")
+}
+
+func TestAppenderOtelTracing(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+
+	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+	)
+	defer tp.Shutdown(context.Background())
+
+	tr := tp.Tracer("test")
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval: time.Minute,
+		Logger:        zap.New(core),
+		// NOTE: Tracer must be nil to use otel tracing
+		Tracer:     nil,
+		OtelTracer: tr,
+	})
+	require.NoError(t, err)
+
+	const N = 100
+	for i := 0; i < N; i++ {
+		addMinimalDoc(t, indexer, "logs-foo-testing")
+	}
+
+	// Closing the indexer flushes enqueued documents.
+	require.NoError(t, indexer.Close(context.Background()))
+
+	require.NoError(t, tp.Shutdown(context.Background()))
+	err = exp.Shutdown(context.Background())
+	require.NoError(t, err)
+
+	spans := exp.GetSpans()
+	fmt.Println(len(spans))
+	assert.NotEmpty(t, spans)
+
+	correlatedLogs := observed.FilterFieldKey("transaction.id").All()
+	assert.NotEmpty(t, correlatedLogs)
 }
 
 func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
