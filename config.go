@@ -23,6 +23,7 @@ import (
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +43,8 @@ type Config struct {
 	//
 	// If Tracer is nil, requests will not be traced.
 	Tracer *apm.Tracer
+
+	OtelTracer trace.Tracer
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
 	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
