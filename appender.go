@@ -702,8 +702,15 @@ func (a *Appender) indexFailureRate() float64 {
 
 // tracingEnabled checks whether we should be doing tracing
 func (a *Appender) tracingEnabled() bool {
-	return (a.config.Tracer != nil && a.config.Tracer.Recording()) ||
-		a.config.OtelTracer != nil
+	// FIXME: remove
+	fmt.Println(a.config.Tracer != nil && a.config.Tracer.Recording())
+	return a.config.Tracer != nil && a.config.Tracer.Recording()
+}
+
+func (a *Appender) otelTracingEnabled() bool {
+	// FIXME: remove
+	fmt.Println(a.config.OtelTracer != nil)
+	return a.config.OtelTracer != nil
 }
 
 // activeLimit returns the value of GOMAXPROCS * cfg.ActiveRatio. Which limits
