@@ -308,24 +308,29 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
+	var span trace.Span
 	if a.tracingEnabled() {
-		var ctx context.Context
-		if a.config.Tracer != nil {
-			tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
-			tx.Context.SetLabel("documents", n)
-			defer tx.End()
-			ctx = apm.ContextWithTransaction(ctx, tx)
-		} else if a.config.OtelTracer != nil {
-			// NOTE: this is missing transaction type information. How is this conveyed in otel?
-			var span trace.Span
-			ctx, span = a.config.OtelTracer.Start(ctx, "docappender.flush")
-			span.SetAttributes(attribute.Int("documents", n))
-			defer span.End()
-		}
+		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
+		tx.Context.SetLabel("documents", n)
+		defer tx.End()
+		ctx = apm.ContextWithTransaction(ctx, tx)
 
 		// Add trace IDs to logger, to associate any per-item errors
 		// below with the trace.
 		logger = logger.With(apmzap.TraceContext(ctx)...)
+	} else if a.otelTracingEnabled() {
+		// NOTE: this is missing transaction type information. How is this conveyed in otel?
+		ctx, span = a.config.OtelTracer.Start(ctx, "docappender.flush", trace.WithAttributes(
+			attribute.Int("documents", n),
+		))
+		defer span.End()
+
+		// Add trace IDs to logger, to associate any per-item errors
+		// below with the trace.
+		logger = logger.With(
+			zap.String("traceId", span.SpanContext().TraceID().String()),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+		)
 	}
 
 	var flushCtx context.Context
@@ -356,6 +361,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
+		} else if a.otelTracingEnabled() {
+			span.RecordError(err)
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -407,6 +414,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		failedCount[info]++
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
+		} else if a.otelTracingEnabled() {
+			// trace.SpanFromContext(ctx).RecordError(errors.New(info.Error.Reason))
+			span.RecordError(errors.New(info.Error.Reason))
 		}
 	}
 	for key, count := range failedCount {
