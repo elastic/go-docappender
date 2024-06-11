@@ -34,6 +34,7 @@ import (
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -308,10 +309,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 
 	logger := a.config.Logger
 	if a.tracingEnabled() {
-		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
-		tx.Context.SetLabel("documents", n)
-		defer tx.End()
-		ctx = apm.ContextWithTransaction(ctx, tx)
+		var ctx context.Context
+		if a.config.Tracer != nil {
+			tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
+			tx.Context.SetLabel("documents", n)
+			defer tx.End()
+			ctx = apm.ContextWithTransaction(ctx, tx)
+		} else if a.config.OtelTracer != nil {
+			// NOTE: this is missing transaction type information. How is this conveyed in otel?
+			var span trace.Span
+			ctx, span = a.config.OtelTracer.Start(ctx, "docappender.flush")
+			span.SetAttributes(attribute.Int("documents", n))
+			defer span.End()
+		}
 
 		// Add trace IDs to logger, to associate any per-item errors
 		// below with the trace.
