@@ -361,7 +361,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
-		} else if a.otelTracingEnabled() {
+		} else if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
 		}
 
@@ -414,7 +414,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		failedCount[info]++
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
-		} else if a.otelTracingEnabled() {
+		} else if a.otelTracingEnabled() && span.IsRecording() {
 			// trace.SpanFromContext(ctx).RecordError(errors.New(info.Error.Reason))
 			span.RecordError(errors.New(info.Error.Reason))
 		}
