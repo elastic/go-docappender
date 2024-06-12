@@ -352,15 +352,12 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
 		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
-		if res.StatusCode >= 400 {
-			if res.StatusCode == http.StatusTooManyRequests {
-				e.tooMany = true
-				return resp, e
-			}
-			if res.StatusCode >= 500 {
-				e.serverError = true
-				return resp, e
-			}
+		switch {
+		case res.StatusCode == 429:
+			e.tooMany = true
+		case res.StatusCode >= 500:
+			e.serverError = true
+		case res.StatusCode >= 400 && res.StatusCode != 429:
 			e.clientError = true
 		}
 		return resp, e
