@@ -366,10 +366,16 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
-		if res.StatusCode == http.StatusTooManyRequests {
-			return resp, errorTooManyRequests{res: res}
+		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
+		switch {
+		case res.StatusCode == 429:
+			e.tooMany = true
+		case res.StatusCode >= 500:
+			e.serverError = true
+		case res.StatusCode >= 400 && res.StatusCode != 429:
+			e.clientError = true
 		}
-		return resp, fmt.Errorf("flush failed: %s", res.String())
+		return resp, e
 	}
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
@@ -545,10 +551,14 @@ func indexnth(s []byte, nth int, sep rune) int {
 	})
 }
 
-type errorTooManyRequests struct {
-	res *esapi.Response
+type errorFlushFailed struct {
+	resp        string
+	statusCode  int
+	tooMany     bool
+	clientError bool
+	serverError bool
 }
 
-func (e errorTooManyRequests) Error() string {
-	return fmt.Sprintf("flush failed: %s", e.res.String())
+func (e errorFlushFailed) Error() string {
+	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
 }

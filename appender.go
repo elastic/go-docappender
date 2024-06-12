@@ -349,21 +349,30 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			a.addCount(int64(n),
-				nil,
+			a.addCount(int64(n), nil,
 				a.metrics.docsIndexed,
 				metric.WithAttributes(attribute.String("status", "Timeout")),
 			)
 		}
 
-		var errTooMany errorTooManyRequests
-		// 429 may be returned as errors from the bulk indexer.
-		if errors.As(err, &errTooMany) {
-			a.addCount(int64(n),
-				&a.tooManyRequests,
-				a.metrics.docsIndexed,
-				metric.WithAttributes(attribute.String("status", "TooMany")),
-			)
+		// Bulk indexing may fail with different status codes.
+		var errFailed errorFlushFailed
+		if errors.As(err, &errFailed) {
+			var legacy *int64
+			var status string
+			switch {
+			case errFailed.tooMany:
+				legacy, status = &a.tooManyRequests, "TooMany"
+			case errFailed.clientError:
+				legacy, status = &a.docsFailedClient, "FailedClient"
+			case errFailed.serverError:
+				legacy, status = &a.docsFailedServer, "FailedServer"
+			}
+			if status != "" {
+				a.addCount(int64(n), legacy, a.metrics.docsIndexed,
+					metric.WithAttributes(attribute.String("status", status)),
+				)
+			}
 		}
 		return err
 	}
@@ -409,35 +418,28 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	if resp.RetriedDocs > 0 {
 		// docs are scheduled to be retried but not yet failed due to retry limit
-		a.addCount(resp.RetriedDocs,
-			nil,
-			a.metrics.docsRetried,
-		)
+		a.addCount(resp.RetriedDocs, nil, a.metrics.docsRetried)
 	}
 	if docsIndexed > 0 {
-		a.addCount(docsIndexed,
-			&a.docsIndexed,
+		a.addCount(docsIndexed, &a.docsIndexed,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "Success")),
 		)
 	}
 	if tooManyRequests > 0 {
-		a.addCount(tooManyRequests,
-			&a.tooManyRequests,
+		a.addCount(tooManyRequests, &a.tooManyRequests,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "TooMany")),
 		)
 	}
 	if clientFailed > 0 {
-		a.addCount(clientFailed,
-			&a.docsFailedClient,
+		a.addCount(clientFailed, &a.docsFailedClient,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "FailedClient")),
 		)
 	}
 	if serverFailed > 0 {
-		a.addCount(serverFailed,
-			&a.docsFailedServer,
+		a.addCount(serverFailed, &a.docsFailedServer,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
 		)
