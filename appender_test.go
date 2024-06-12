@@ -672,6 +672,10 @@ func TestAppenderFlushBytes(t *testing.T) {
 }
 
 func TestAppenderFlushRequestError(t *testing.T) {
+	// This test ensures that the appender correctly categorizes and quantifies
+	// failed requests with different failure scenarios. Since a bulk request
+	// contains N documents, the appender should increment the categorized
+	// failure by the same number of documents in the request.
 	test := func(t *testing.T, sc int, errMsg string) {
 		var bytesTotal int64
 		var bytesUncompressedTotal int64
@@ -685,31 +689,32 @@ func TestAppenderFlushRequestError(t *testing.T) {
 		require.NoError(t, err)
 		defer indexer.Close(context.Background())
 
-		addMinimalDoc(t, indexer, "logs-foo-testing")
+		// Send 3 docs, ensure that metrics are always in the unit of documents, not requests.
+		docs := 3
+		for i := 0; i < docs; i++ {
+			addMinimalDoc(t, indexer, "logs-foo-testing")
+		}
 
 		// Closing the indexer flushes enqueued documents.
 		err = indexer.Close(context.Background())
 		require.EqualError(t, err, errMsg)
 		stats := indexer.Stats()
 		wantStats := docappender.Stats{
-			Added:                  1,
+			Added:                  int64(docs),
 			Active:                 0,
-			BulkRequests:           1,
-			Failed:                 1,
+			BulkRequests:           1, // Single bulk request
+			Failed:                 int64(docs),
 			AvailableBulkRequests:  10,
 			BytesTotal:             bytesTotal,
 			BytesUncompressedTotal: bytesUncompressedTotal,
 		}
-		if sc >= 400 {
-			if sc == 429 {
-				wantStats.TooManyRequests = 1
-			} else {
-				if sc >= 500 {
-					wantStats.FailedServer = 1
-				} else {
-					wantStats.FailedClient = 1
-				}
-			}
+		switch {
+		case sc == 429:
+			wantStats.TooManyRequests = int64(docs)
+		case sc >= 500:
+			wantStats.FailedServer = int64(docs)
+		case sc >= 400 && sc != 429:
+			wantStats.FailedClient = int64(docs)
 		}
 		assert.Equal(t, wantStats, stats)
 	}
@@ -724,6 +729,12 @@ func TestAppenderFlushRequestError(t *testing.T) {
 	})
 	t.Run("500", func(t *testing.T) {
 		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] ")
+	})
+	t.Run("503", func(t *testing.T) {
+		test(t, http.StatusServiceUnavailable, "flush failed (503): [503 Service Unavailable] ")
+	})
+	t.Run("504", func(t *testing.T) {
+		test(t, http.StatusGatewayTimeout, "flush failed (504): [504 Gateway Timeout] ")
 	})
 }
 
