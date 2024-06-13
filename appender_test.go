@@ -1682,10 +1682,6 @@ func TestAppenderOtelTracing(t *testing.T) {
 	// Closing the indexer flushes enqueued documents.
 	require.NoError(t, indexer.Close(context.Background()))
 
-	require.NoError(t, tp.Shutdown(context.Background()))
-	err = exp.Shutdown(context.Background())
-	require.NoError(t, err)
-
 	spans := exp.GetSpans()
 	fmt.Println(len(spans))
 	assert.NotEmpty(t, spans)
