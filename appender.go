@@ -371,6 +371,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			apm.CaptureError(ctx, err).Send()
 		} else if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
+			span.SetStatus(codes.Error, "bulk indexing request failed")
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -423,7 +424,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
 		} else if a.otelTracingEnabled() && span.IsRecording() {
-			span.RecordError(errors.New(info.Error.Reason))
+			e := errors.New(info.Error.Reason)
+			span.RecordError(e)
+			span.SetStatus(codes.Error, e.Error())
 		}
 	}
 	for key, count := range failedCount {
