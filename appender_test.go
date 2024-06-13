@@ -1683,11 +1683,25 @@ func TestAppenderOtelTracing(t *testing.T) {
 	require.NoError(t, indexer.Close(context.Background()))
 
 	spans := exp.GetSpans()
-	fmt.Println(len(spans))
 	assert.NotEmpty(t, spans)
 
-	correlatedLogs := observed.FilterFieldKey("transaction.id").All()
+	gotSpan := spans[0]
+	assert.Equal(t, "docappender.flush", gotSpan.Name)
+
+	for _, a := range gotSpan.Attributes {
+		if a.Key == "documents" {
+			assert.Equal(t, int64(N), a.Value.AsInt64())
+		}
+	}
+
+	correlatedLogs := observed.FilterFieldKey("traceId").All()
 	assert.NotEmpty(t, correlatedLogs)
+
+	log := correlatedLogs[0]
+	expectedTraceID := gotSpan.SpanContext.TraceID().String()
+	assert.Equal(t, expectedTraceID, log.ContextMap()["traceId"])
+	expectedSpanID := gotSpan.SpanContext.SpanID().String()
+	assert.Equal(t, expectedSpanID, log.ContextMap()["spanId"])
 }
 
 func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
