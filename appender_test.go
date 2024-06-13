@@ -1724,8 +1724,23 @@ func newJSONReader(v any) *bytes.Reader {
 }
 
 func TestAppenderOtelTracing(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		testTracedAppend(t, 200, sdktrace.Status{
+			Code:        codes.Ok,
+			Description: "",
+		})
+	})
+	t.Run("failure", func(t *testing.T) {
+		testTracedAppend(t, 400, sdktrace.Status{
+			Code:        codes.Error,
+			Description: "bulk indexing request failed",
+		})
+	})
+}
+
+func testTracedAppend(t *testing.T, responseCode int, status sdktrace.Status) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+		w.WriteHeader(responseCode)
 		_, result := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
@@ -1746,6 +1761,7 @@ func TestAppenderOtelTracing(t *testing.T) {
 		OtelTracerProvider: tp,
 	})
 	require.NoError(t, err)
+	defer indexer.Close(context.Background())
 
 	const N = 100
 	for i := 0; i < N; i++ {
@@ -1753,15 +1769,14 @@ func TestAppenderOtelTracing(t *testing.T) {
 	}
 
 	// Closing the indexer flushes enqueued documents.
-	require.NoError(t, indexer.Close(context.Background()))
+	_ = indexer.Close(context.Background())
 
 	spans := exp.GetSpans()
 	assert.NotEmpty(t, spans)
 
 	gotSpan := spans[0]
-	fmt.Printf("%+v\n", gotSpan)
 	assert.Equal(t, "docappender.flush", gotSpan.Name)
-	assert.Equal(t, sdktrace.Status{Code: codes.Ok}, gotSpan.Status)
+	assert.Equal(t, status, gotSpan.Status)
 
 	for _, a := range gotSpan.Attributes {
 		if a.Key == "documents" {
