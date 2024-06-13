@@ -327,7 +327,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		// below with the trace.
 		logger = logger.With(apmzap.TraceContext(ctx)...)
 	} else if a.otelTracingEnabled() {
-		// NOTE: this is missing transaction type information. How is this conveyed in otel?
 		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
 			attribute.Int("documents", n),
 		))
