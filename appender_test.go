@@ -1650,62 +1650,6 @@ func TestAppenderTracing(t *testing.T) {
 	testAppenderTracing(t, 400, "failure")
 }
 
-func TestAppenderOtelTracing(t *testing.T) {
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		_, result := docappendertest.DecodeBulkRequest(r)
-		json.NewEncoder(w).Encode(result)
-	})
-
-	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
-
-	exp := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSyncer(exp),
-	)
-	defer tp.Shutdown(context.Background())
-
-	tr := tp.Tracer("test")
-	indexer, err := docappender.New(client, docappender.Config{
-		FlushInterval: time.Minute,
-		Logger:        zap.New(core),
-		// NOTE: Tracer must be nil to use otel tracing
-		Tracer:     nil,
-		OtelTracer: tr,
-	})
-	require.NoError(t, err)
-
-	const N = 100
-	for i := 0; i < N; i++ {
-		addMinimalDoc(t, indexer, "logs-foo-testing")
-	}
-
-	// Closing the indexer flushes enqueued documents.
-	require.NoError(t, indexer.Close(context.Background()))
-
-	spans := exp.GetSpans()
-	assert.NotEmpty(t, spans)
-
-	gotSpan := spans[0]
-	assert.Equal(t, "docappender.flush", gotSpan.Name)
-	assert.Equal(t, sdktrace.Status{Code: codes.Ok}, gotSpan.Status)
-
-	for _, a := range gotSpan.Attributes {
-		if a.Key == "documents" {
-			assert.Equal(t, int64(N), a.Value.AsInt64())
-		}
-	}
-
-	correlatedLogs := observed.FilterFieldKey("traceId").All()
-	assert.NotEmpty(t, correlatedLogs)
-
-	log := correlatedLogs[0]
-	expectedTraceID := gotSpan.SpanContext.TraceID().String()
-	assert.Equal(t, expectedTraceID, log.ContextMap()["traceId"])
-	expectedSpanID := gotSpan.SpanContext.SpanID().String()
-	assert.Equal(t, expectedSpanID, log.ContextMap()["spanId"])
-}
-
 func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
@@ -1777,4 +1721,60 @@ func newJSONReader(v any) *bytes.Reader {
 		panic(err)
 	}
 	return bytes.NewReader(data)
+}
+
+func TestAppenderOtelTracing(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+
+	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+	)
+	defer tp.Shutdown(context.Background())
+
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval: time.Minute,
+		Logger:        zap.New(core),
+		// NOTE: Tracer must be nil to use otel tracing
+		Tracer:             nil,
+		OtelTracerProvider: tp,
+	})
+	require.NoError(t, err)
+
+	const N = 100
+	for i := 0; i < N; i++ {
+		addMinimalDoc(t, indexer, "logs-foo-testing")
+	}
+
+	// Closing the indexer flushes enqueued documents.
+	require.NoError(t, indexer.Close(context.Background()))
+
+	spans := exp.GetSpans()
+	assert.NotEmpty(t, spans)
+
+	gotSpan := spans[0]
+	fmt.Printf("%+v\n", gotSpan)
+	assert.Equal(t, "docappender.flush", gotSpan.Name)
+	assert.Equal(t, sdktrace.Status{Code: codes.Ok}, gotSpan.Status)
+
+	for _, a := range gotSpan.Attributes {
+		if a.Key == "documents" {
+			assert.Equal(t, int64(N), a.Value.AsInt64())
+		}
+	}
+
+	correlatedLogs := observed.FilterFieldKey("traceId").All()
+	assert.NotEmpty(t, correlatedLogs)
+
+	log := correlatedLogs[0]
+	expectedTraceID := gotSpan.SpanContext.TraceID().String()
+	assert.Equal(t, expectedTraceID, log.ContextMap()["traceId"])
+	expectedSpanID := gotSpan.SpanContext.SpanID().String()
+	assert.Equal(t, expectedSpanID, log.ContextMap()["spanId"])
 }
