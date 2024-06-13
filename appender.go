@@ -86,6 +86,8 @@ type Appender struct {
 	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
+
+	tracer trace.Tracer
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
@@ -184,6 +186,11 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 		indexer.runActiveIndexer()
 		return nil
 	})
+
+	if cfg.Tracer == nil && cfg.OtelTracerProvider != nil {
+		indexer.tracer = cfg.OtelTracerProvider.Tracer("github.com/elastic/go-docappender.appender")
+	}
+
 	return indexer, nil
 }
 
@@ -320,7 +327,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		logger = logger.With(apmzap.TraceContext(ctx)...)
 	} else if a.otelTracingEnabled() {
 		// NOTE: this is missing transaction type information. How is this conveyed in otel?
-		ctx, span = a.config.OtelTracer.Start(ctx, "docappender.flush", trace.WithAttributes(
+		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
 			attribute.Int("documents", n),
 		))
 		defer span.End()
@@ -701,15 +708,11 @@ func (a *Appender) indexFailureRate() float64 {
 
 // tracingEnabled checks whether we should be doing tracing
 func (a *Appender) tracingEnabled() bool {
-	// FIXME: remove
-	fmt.Println(a.config.Tracer != nil && a.config.Tracer.Recording())
 	return a.config.Tracer != nil && a.config.Tracer.Recording()
 }
 
 func (a *Appender) otelTracingEnabled() bool {
-	// FIXME: remove
-	fmt.Println(a.config.OtelTracer != nil)
-	return a.config.OtelTracer != nil
+	return a.tracer != nil
 }
 
 // activeLimit returns the value of GOMAXPROCS * cfg.ActiveRatio. Which limits

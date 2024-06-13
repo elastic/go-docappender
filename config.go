@@ -44,7 +44,7 @@ type Config struct {
 	// If Tracer is nil, requests will not be traced.
 	Tracer *apm.Tracer
 
-	OtelTracer trace.Tracer
+	OtelTracerProvider trace.TracerProvider
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
 	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
