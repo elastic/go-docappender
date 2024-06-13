@@ -41,9 +41,16 @@ type Config struct {
 	// Tracer holds an optional apm.Tracer to use for tracing bulk requests
 	// to Elasticsearch. Each bulk request is traced as a transaction.
 	//
-	// If Tracer is nil, requests will not be traced.
+	// If Tracer is nil, requests will not be traced. Note however that
+	// OtelTracerProvider may not be nil, in which case the request will
+	// be traced by a different tracer.
 	Tracer *apm.Tracer
 
+	// OtelTracerProvider holds an optional otel TracerProvider for tracing
+	// flush requests.
+	//
+	// If OtelTracerProvider is nil, requests will not be traced.
+	// To use this provider Tracer must be nil.
 	OtelTracerProvider trace.TracerProvider
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
