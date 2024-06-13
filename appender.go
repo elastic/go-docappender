@@ -718,6 +718,8 @@ func (a *Appender) tracingEnabled() bool {
 	return a.config.Tracer != nil && a.config.Tracer.Recording()
 }
 
+// otelTracingEnabled checks whether we should be doing tracing
+// using otel tracer.
 func (a *Appender) otelTracingEnabled() bool {
 	return a.tracer != nil
 }
