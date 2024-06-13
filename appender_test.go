@@ -39,6 +39,7 @@ import (
 	"go.elastic.co/apm/v2/apmtest"
 	"go.elastic.co/apm/v2/model"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
@@ -1687,6 +1688,7 @@ func TestAppenderOtelTracing(t *testing.T) {
 
 	gotSpan := spans[0]
 	assert.Equal(t, "docappender.flush", gotSpan.Name)
+	assert.Equal(t, sdktrace.Status{Code: codes.Ok}, gotSpan.Status)
 
 	for _, a := range gotSpan.Attributes {
 		if a.Key == "documents" {
