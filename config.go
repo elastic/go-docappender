@@ -44,6 +44,9 @@ type Config struct {
 	// If Tracer is nil, requests will not be traced. Note however that
 	// OtelTracerProvider may not be nil, in which case the request will
 	// be traced by a different tracer.
+	//
+	// Deprecated: Tracer is replaced by TracerProvider in a shift towards
+	// OpenTelemetry. Please use TracerProvider.
 	Tracer *apm.Tracer
 
 	// TracerProvider holds an optional otel TracerProvider for tracing
