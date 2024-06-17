@@ -88,6 +88,7 @@ type Appender struct {
 	mu                    sync.Mutex
 	closed                chan struct{}
 
+        // tracer is an OTel tracer, and should not be confused with `a.config.Tracer` which is an Elastic APM Tracer.
 	tracer trace.Tracer
 }
 
