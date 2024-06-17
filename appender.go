@@ -188,8 +188,8 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 		return nil
 	})
 
-	if cfg.Tracer == nil && cfg.OtelTracerProvider != nil {
-		indexer.tracer = cfg.OtelTracerProvider.Tracer("github.com/elastic/go-docappender.appender")
+	if cfg.Tracer == nil && cfg.TracerProvider != nil {
+		indexer.tracer = cfg.TracerProvider.Tracer("github.com/elastic/go-docappender.appender")
 	}
 
 	return indexer, nil

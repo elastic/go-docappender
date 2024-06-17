@@ -1761,8 +1761,8 @@ func testTracedAppend(t *testing.T, responseCode int, status sdktrace.Status) {
 		FlushInterval: time.Minute,
 		Logger:        zap.New(core),
 		// NOTE: Tracer must be nil to use otel tracing
-		Tracer:             nil,
-		OtelTracerProvider: tp,
+		Tracer:         nil,
+		TracerProvider: tp,
 	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
