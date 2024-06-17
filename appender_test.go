@@ -39,9 +39,12 @@ import (
 	"go.elastic.co/apm/v2/apmtest"
 	"go.elastic.co/apm/v2/model"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -1722,4 +1725,75 @@ func newJSONReader(v any) *bytes.Reader {
 		panic(err)
 	}
 	return bytes.NewReader(data)
+}
+
+func TestAppenderOtelTracing(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		testTracedAppend(t, 200, sdktrace.Status{
+			Code:        codes.Ok,
+			Description: "",
+		})
+	})
+	t.Run("failure", func(t *testing.T) {
+		testTracedAppend(t, 400, sdktrace.Status{
+			Code:        codes.Error,
+			Description: "bulk indexing request failed",
+		})
+	})
+}
+
+func testTracedAppend(t *testing.T, responseCode int, status sdktrace.Status) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(responseCode)
+		_, result := docappendertest.DecodeBulkRequest(r)
+		json.NewEncoder(w).Encode(result)
+	})
+
+	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+	)
+	defer tp.Shutdown(context.Background())
+
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushInterval: time.Minute,
+		Logger:        zap.New(core),
+		// NOTE: Tracer must be nil to use otel tracing
+		Tracer:         nil,
+		TracerProvider: tp,
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	const N = 100
+	for i := 0; i < N; i++ {
+		addMinimalDoc(t, indexer, "logs-foo-testing")
+	}
+
+	// Closing the indexer flushes enqueued documents.
+	_ = indexer.Close(context.Background())
+
+	spans := exp.GetSpans()
+	assert.NotEmpty(t, spans)
+
+	gotSpan := spans[0]
+	assert.Equal(t, "docappender.flush", gotSpan.Name)
+	assert.Equal(t, status, gotSpan.Status)
+
+	for _, a := range gotSpan.Attributes {
+		if a.Key == "documents" {
+			assert.Equal(t, int64(N), a.Value.AsInt64())
+		}
+	}
+
+	correlatedLogs := observed.FilterFieldKey("traceId").All()
+	assert.NotEmpty(t, correlatedLogs)
+
+	log := correlatedLogs[0]
+	expectedTraceID := gotSpan.SpanContext.TraceID().String()
+	assert.Equal(t, expectedTraceID, log.ContextMap()["traceId"])
+	expectedSpanID := gotSpan.SpanContext.SpanID().String()
+	assert.Equal(t, expectedSpanID, log.ContextMap()["spanId"])
 }

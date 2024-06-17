@@ -33,7 +33,9 @@ import (
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -85,6 +87,10 @@ type Appender struct {
 	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
+
+	// tracer is an OTel tracer, and should not be confused with `a.config.Tracer`
+	// which is an Elastic APM Tracer.
+	tracer trace.Tracer
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
@@ -183,6 +189,11 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 		indexer.runActiveIndexer()
 		return nil
 	})
+
+	if cfg.Tracer == nil && cfg.TracerProvider != nil {
+		indexer.tracer = cfg.TracerProvider.Tracer("github.com/elastic/go-docappender.appender")
+	}
+
 	return indexer, nil
 }
 
@@ -307,6 +318,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
+	var span trace.Span
 	if a.tracingEnabled() {
 		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
 		tx.Context.SetLabel("documents", n)
@@ -316,6 +328,18 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		// Add trace IDs to logger, to associate any per-item errors
 		// below with the trace.
 		logger = logger.With(apmzap.TraceContext(ctx)...)
+	} else if a.otelTracingEnabled() {
+		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
+			attribute.Int("documents", n),
+		))
+		defer span.End()
+
+		// Add trace IDs to logger, to associate any per-item errors
+		// below with the trace.
+		logger = logger.With(
+			zap.String("traceId", span.SpanContext().TraceID().String()),
+			zap.String("spanId", span.SpanContext().SpanID().String()),
+		)
 	}
 
 	var flushCtx context.Context
@@ -346,6 +370,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, err).Send()
+		} else if a.otelTracingEnabled() && span.IsRecording() {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "bulk indexing request failed")
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -406,6 +433,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		failedCount[info]++
 		if a.tracingEnabled() {
 			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
+		} else if a.otelTracingEnabled() && span.IsRecording() {
+			e := errors.New(info.Error.Reason)
+			span.RecordError(e)
+			span.SetStatus(codes.Error, e.Error())
 		}
 	}
 	for key, count := range failedCount {
@@ -450,6 +481,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
 	)
+	if a.otelTracingEnabled() && span.IsRecording() {
+		span.SetStatus(codes.Ok, "")
+	}
 	return nil
 }
 
@@ -685,6 +719,12 @@ func (a *Appender) indexFailureRate() float64 {
 // tracingEnabled checks whether we should be doing tracing
 func (a *Appender) tracingEnabled() bool {
 	return a.config.Tracer != nil && a.config.Tracer.Recording()
+}
+
+// otelTracingEnabled checks whether we should be doing tracing
+// using otel tracer.
+func (a *Appender) otelTracingEnabled() bool {
+	return a.tracer != nil
 }
 
 // activeLimit returns the value of GOMAXPROCS * cfg.ActiveRatio. Which limits

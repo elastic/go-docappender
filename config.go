@@ -23,6 +23,7 @@ import (
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -40,8 +41,20 @@ type Config struct {
 	// Tracer holds an optional apm.Tracer to use for tracing bulk requests
 	// to Elasticsearch. Each bulk request is traced as a transaction.
 	//
-	// If Tracer is nil, requests will not be traced.
+	// If Tracer is nil, requests will not be traced. Note however that
+	// OtelTracerProvider may not be nil, in which case the request will
+	// be traced by a different tracer.
+	//
+	// Deprecated: Tracer is replaced by TracerProvider in a shift towards
+	// OpenTelemetry. Please use TracerProvider.
 	Tracer *apm.Tracer
+
+	// TracerProvider holds an optional otel TracerProvider for tracing
+	// flush requests.
+	//
+	// If TracerProvider is nil, requests will not be traced.
+	// To use this provider Tracer must be nil.
+	TracerProvider trace.TracerProvider
 
 	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
 	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
