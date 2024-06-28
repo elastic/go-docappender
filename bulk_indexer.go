@@ -321,7 +321,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		copy(b.copyBuf, b.buf.Bytes())
 	}
 
-	fmt.Println(b.buf.Bytes())
+	fmt.Println(string(b.buf.Bytes()))
 
 	req := esapi.BulkRequest{
 		// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
