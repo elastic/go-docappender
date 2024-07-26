@@ -139,11 +139,17 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
+										reason := i.ReadString()
 										// Match Elasticsearch field mapper field value:
 										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
 										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
 										item.Error.Reason, _, _ = strings.Cut(
-											i.ReadString(), ". Preview",
+											reason, ". Preview",
+										)
+										// Match Elasticsearch field mapper field value:
+										// Non-standard token 'NaN': enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow\n at [Source: (byte[])%s
+										item.Error.Reason, _, _ = strings.Cut(
+											item.Error.Reason, ": enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow",
 										)
 									default:
 										i.Skip()
