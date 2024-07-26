@@ -759,7 +759,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 				itemResp.Error.Reason = "this reason should not be logged"
 			case 3:
 				itemResp.Error.Type = "x_content_parse_exception"
-				itemResp.Error.Reason = "Non-standard token 'NaN': enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow"
+				itemResp.Error.Reason = "this reason should not be logged"
 
 			}
 			item["create"] = itemResp
@@ -794,7 +794,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
 	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[2].Message)
 	assert.Equal(t, int64(2), entries[2].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): Non-standard token 'NaN'", entries[3].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): ", entries[3].Message)
 	assert.Equal(t, int64(2), entries[3].Context[0].Integer)
 }
 

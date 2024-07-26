@@ -146,11 +146,6 @@ func init() {
 										item.Error.Reason, _, _ = strings.Cut(
 											reason, ". Preview",
 										)
-										// Match Elasticsearch field mapper field value:
-										// Non-standard token 'NaN': enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow\n at [Source: (byte[])%s
-										item.Error.Reason, _, _ = strings.Cut(
-											item.Error.Reason, ": enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow",
-										)
 									default:
 										i.Skip()
 									}
@@ -163,6 +158,11 @@ func init() {
 						})
 						// For unavailable_shards_exception, remove item.Error.Reason as it may contain sensitive request content.
 						if item.Error.Type == "unavailable_shards_exception" {
+							item.Error.Reason = ""
+						}
+
+						// For unavailable_shards_exception, remove item.Error.Reason
+						if item.Error.Type == "x_content_parse_exception" {
 							item.Error.Reason = ""
 						}
 
