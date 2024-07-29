@@ -156,13 +156,8 @@ func init() {
 							}
 							return true
 						})
-						// For unavailable_shards_exception, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" {
-							item.Error.Reason = ""
-						}
-
-						// For unavailable_shards_exception, remove item.Error.Reason
-						if item.Error.Type == "x_content_parse_exception" {
+						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
+						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" {
 							item.Error.Reason = ""
 						}
 
