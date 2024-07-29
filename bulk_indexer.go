@@ -139,11 +139,12 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
+										reason := i.ReadString()
 										// Match Elasticsearch field mapper field value:
 										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
 										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
 										item.Error.Reason, _, _ = strings.Cut(
-											i.ReadString(), ". Preview",
+											reason, ". Preview",
 										)
 									default:
 										i.Skip()
@@ -155,8 +156,8 @@ func init() {
 							}
 							return true
 						})
-						// For unavailable_shards_exception, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" {
+						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
+						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" {
 							item.Error.Reason = ""
 						}
 
