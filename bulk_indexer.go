@@ -309,15 +309,15 @@ func (b *BulkIndexer) writeMeta(index, documentID string, dynamicTemplates map[s
 			b.jsonw.RawByte(',')
 		}
 		b.jsonw.RawString(`"dynamic_templates":{`)
-		var i int
+		firstDynamicTemplate := true
 		for k, v := range dynamicTemplates {
-			if i > 0 {
+			if !firstDynamicTemplate {
 				b.jsonw.RawByte(',')
 			}
 			b.jsonw.String(k)
 			b.jsonw.RawByte(':')
 			b.jsonw.String(v)
-			i++
+			firstDynamicTemplate = false
 		}
 		b.jsonw.RawByte('}')
 		first = false
