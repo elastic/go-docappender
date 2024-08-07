@@ -304,7 +304,7 @@ func (b *BulkIndexer) writeMeta(index, documentID string, dynamicTemplates map[s
 		b.jsonw.String(index)
 		first = false
 	}
-	if dynamicTemplates != nil && len(dynamicTemplates) > 0 {
+	if len(dynamicTemplates) > 0 {
 		if !first {
 			b.jsonw.RawByte(',')
 		}
