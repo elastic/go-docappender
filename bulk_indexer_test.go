@@ -128,3 +128,40 @@ func TestBulkIndexer(t *testing.T) {
 		})
 	}
 }
+
+func TestDynamicTemplates(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result, _, dynamicTemplates := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplates(r)
+		require.Equal(t, []map[string]string{
+			{"one": "two", "three": "four"},
+			{"five": "six", "seven": "eight"},
+		}, dynamicTemplates)
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "testidx",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+		DynamicTemplates: map[string]string{"one": "two", "three": "four"},
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "testidx",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+		DynamicTemplates: map[string]string{"five": "six", "seven": "eight"},
+	})
+	require.NoError(t, err)
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stat.Indexed)
+}
