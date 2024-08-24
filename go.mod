@@ -1,6 +1,6 @@
 module github.com/elastic/go-docappender/v2
 
-go 1.21
+go 1.22
 
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.14.0
