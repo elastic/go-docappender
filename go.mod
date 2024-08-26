@@ -10,7 +10,7 @@ require (
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.0
 	go.elastic.co/apm/module/apmzap/v2 v2.6.0
 	go.elastic.co/apm/v2 v2.6.0
-	go.elastic.co/fastjson v1.3.0
+	go.elastic.co/fastjson v1.4.0
 	go.opentelemetry.io/otel v1.29.0
 	go.opentelemetry.io/otel/metric v1.29.0
 	go.opentelemetry.io/otel/sdk v1.29.0
