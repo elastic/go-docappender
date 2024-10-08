@@ -687,6 +687,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 			_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
 			bytesUncompressedTotal += stat.UncompressedBytes
 			w.WriteHeader(sc)
+			w.Write([]byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`))
 		})
 		indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
 		require.NoError(t, err)
@@ -722,22 +723,22 @@ func TestAppenderFlushRequestError(t *testing.T) {
 		assert.Equal(t, wantStats, stats)
 	}
 	t.Run("400", func(t *testing.T) {
-		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] ")
+		test(t, http.StatusBadRequest, "flush failed (400): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("403", func(t *testing.T) {
-		test(t, http.StatusForbidden, "flush failed (403): [403 Forbidden] ")
+		test(t, http.StatusForbidden, "flush failed (403): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("429", func(t *testing.T) {
-		test(t, http.StatusTooManyRequests, "flush failed (429): [429 Too Many Requests] ")
+		test(t, http.StatusTooManyRequests, "flush failed (429): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("500", func(t *testing.T) {
-		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] ")
+		test(t, http.StatusInternalServerError, "flush failed (500): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("503", func(t *testing.T) {
-		test(t, http.StatusServiceUnavailable, "flush failed (503): [503 Service Unavailable] ")
+		test(t, http.StatusServiceUnavailable, "flush failed (503): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("504", func(t *testing.T) {
-		test(t, http.StatusGatewayTimeout, "flush failed (504): [504 Gateway Timeout] ")
+		test(t, http.StatusGatewayTimeout, "flush failed (504): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 }
 
