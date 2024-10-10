@@ -20,6 +20,7 @@ package docappender
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -389,7 +390,27 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
-		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
+		var s string
+		var er struct {
+			Error struct {
+				Type     string `json:"type,omitempty"`
+				Reason   string `json:"reason,omitempty"`
+				CausedBy struct {
+					Type   string `json:"type,omitempty"`
+					Reason string `json:"reason,omitempty"`
+				} `json:"caused_by,omitempty"`
+			} `json:"error,omitempty"`
+		}
+
+		if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
+			er.Error.Reason = ""
+			er.Error.CausedBy.Reason = ""
+
+			b, _ := json.Marshal(&er)
+			s = string(b)
+		}
+
+		e := errorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
