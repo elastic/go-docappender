@@ -158,7 +158,7 @@ func init() {
 							return true
 						})
 						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" {
+						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" || item.Error.Type == "document_parsing_exception" {
 							item.Error.Reason = ""
 						}
 
