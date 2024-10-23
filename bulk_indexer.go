@@ -101,9 +101,15 @@ type BulkIndexer struct {
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed     int64
+	// Indexed contains the total number of successfully indexed documents.
+	Indexed int64
+	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
-	FailedDocs  []BulkIndexerResponseItem
+	// GreatestRetry contains the greatest observed retry count in the entire
+	// bulk request.
+	GreatestRetry int
+	// FailedDocs contains the failed documents.
+	FailedDocs []BulkIndexerResponseItem
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -482,6 +488,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
+				}
+				if resp.GreatestRetry < count {
+					resp.GreatestRetry = count
 				}
 
 				// Since some items may have succeeded, counter positions need

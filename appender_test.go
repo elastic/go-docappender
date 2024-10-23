@@ -329,7 +329,11 @@ loop:
 		case "elasticsearch.events.processed":
 			assertProcessedCounter(m, indexerAttrs)
 		case "elasticsearch.events.retried":
-			assertCounter(m, 1, indexerAttrs)
+			assertCounter(m, 1, attribute.NewSet(
+				attribute.String("a", "b"),
+				attribute.String("c", "d"),
+				attribute.Int("greatest_retry", 1),
+			))
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
@@ -1046,7 +1050,9 @@ func TestAppenderRetryDocument(t *testing.T) {
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
 				case "elasticsearch.events.retried":
-					assertCounter(m, 5, *attribute.EmptySet())
+					assertCounter(m, 5, attribute.NewSet(
+						attribute.Int("greatest_retry", 1),
+					))
 				}
 			})
 			assert.Equal(t, int64(1), asserted.Load())
@@ -1064,7 +1070,9 @@ func TestAppenderRetryDocument(t *testing.T) {
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
 				case "elasticsearch.events.retried":
-					assertCounter(m, 5, *attribute.EmptySet())
+					assertCounter(m, 5, attribute.NewSet(
+						attribute.Int("greatest_retry", 2),
+					))
 				}
 			})
 			assert.Equal(t, int64(2), asserted.Load())
