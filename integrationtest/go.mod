@@ -6,7 +6,7 @@ require (
 	github.com/elastic/go-docappender/v2 v2.0.0
 	github.com/elastic/go-elasticsearch/v7 v7.17.10
 	github.com/elastic/go-elasticsearch/v8 v8.16.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
