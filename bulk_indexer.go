@@ -20,6 +20,7 @@ package docappender
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,9 +101,15 @@ type BulkIndexer struct {
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed     int64
+	// Indexed contains the total number of successfully indexed documents.
+	Indexed int64
+	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
-	FailedDocs  []BulkIndexerResponseItem
+	// GreatestRetry contains the greatest observed retry count in the entire
+	// bulk request.
+	GreatestRetry int
+	// FailedDocs contains the failed documents.
+	FailedDocs []BulkIndexerResponseItem
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -157,7 +164,7 @@ func init() {
 							return true
 						})
 						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" {
+						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" || item.Error.Type == "document_parsing_exception" {
 							item.Error.Reason = ""
 						}
 
@@ -270,14 +277,15 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 }
 
 type BulkIndexerItem struct {
-	Index      string
-	DocumentID string
-	Body       io.WriterTo
+	Index            string
+	DocumentID       string
+	Body             io.WriterTo
+	DynamicTemplates map[string]string
 }
 
 // Add encodes an item in the buffer.
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
-	b.writeMeta(item.Index, item.DocumentID)
+	b.writeMeta(item.Index, item.DocumentID, item.DynamicTemplates)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -288,18 +296,39 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	return nil
 }
 
-func (b *BulkIndexer) writeMeta(index, documentID string) {
+func (b *BulkIndexer) writeMeta(index, documentID string, dynamicTemplates map[string]string) {
 	b.jsonw.RawString(`{"create":{`)
+	first := true
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
 		b.jsonw.String(documentID)
+		first = false
 	}
 	if index != "" {
-		if documentID != "" {
+		if !first {
 			b.jsonw.RawByte(',')
 		}
 		b.jsonw.RawString(`"_index":`)
 		b.jsonw.String(index)
+		first = false
+	}
+	if len(dynamicTemplates) > 0 {
+		if !first {
+			b.jsonw.RawByte(',')
+		}
+		b.jsonw.RawString(`"dynamic_templates":{`)
+		firstDynamicTemplate := true
+		for k, v := range dynamicTemplates {
+			if !firstDynamicTemplate {
+				b.jsonw.RawByte(',')
+			}
+			b.jsonw.String(k)
+			b.jsonw.RawByte(':')
+			b.jsonw.String(v)
+			firstDynamicTemplate = false
+		}
+		b.jsonw.RawByte('}')
+		first = false
 	}
 	b.jsonw.RawString("}}\n")
 	b.writer.Write(b.jsonw.Bytes())
@@ -367,7 +396,27 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
-		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
+		var s string
+		var er struct {
+			Error struct {
+				Type     string `json:"type,omitempty"`
+				Reason   string `json:"reason,omitempty"`
+				CausedBy struct {
+					Type   string `json:"type,omitempty"`
+					Reason string `json:"reason,omitempty"`
+				} `json:"caused_by,omitempty"`
+			} `json:"error,omitempty"`
+		}
+
+		if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
+			er.Error.Reason = ""
+			er.Error.CausedBy.Reason = ""
+
+			b, _ := json.Marshal(&er)
+			s = string(b)
+		}
+
+		e := errorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -439,6 +488,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					// do not retry, return the document as failed
 					tmp = append(tmp, res)
 					continue
+				}
+				if resp.GreatestRetry < count {
+					resp.GreatestRetry = count
 				}
 
 				// Since some items may have succeeded, counter positions need

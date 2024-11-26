@@ -449,7 +449,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	if resp.RetriedDocs > 0 {
 		// docs are scheduled to be retried but not yet failed due to retry limit
-		a.addCount(resp.RetriedDocs, nil, a.metrics.docsRetried)
+		a.addCount(resp.RetriedDocs, nil, a.metrics.docsRetried,
+			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
+		)
 	}
 	if docsIndexed > 0 {
 		a.addCount(docsIndexed, &a.docsIndexed,

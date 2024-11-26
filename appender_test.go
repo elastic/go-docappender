@@ -329,7 +329,11 @@ loop:
 		case "elasticsearch.events.processed":
 			assertProcessedCounter(m, indexerAttrs)
 		case "elasticsearch.events.retried":
-			assertCounter(m, 1, indexerAttrs)
+			assertCounter(m, 1, attribute.NewSet(
+				attribute.String("a", "b"),
+				attribute.String("c", "d"),
+				attribute.Int("greatest_retry", 1),
+			))
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
@@ -687,6 +691,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 			_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
 			bytesUncompressedTotal += stat.UncompressedBytes
 			w.WriteHeader(sc)
+			w.Write([]byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`))
 		})
 		indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute})
 		require.NoError(t, err)
@@ -722,22 +727,22 @@ func TestAppenderFlushRequestError(t *testing.T) {
 		assert.Equal(t, wantStats, stats)
 	}
 	t.Run("400", func(t *testing.T) {
-		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] ")
+		test(t, http.StatusBadRequest, "flush failed (400): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("403", func(t *testing.T) {
-		test(t, http.StatusForbidden, "flush failed (403): [403 Forbidden] ")
+		test(t, http.StatusForbidden, "flush failed (403): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("429", func(t *testing.T) {
-		test(t, http.StatusTooManyRequests, "flush failed (429): [429 Too Many Requests] ")
+		test(t, http.StatusTooManyRequests, "flush failed (429): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("500", func(t *testing.T) {
-		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] ")
+		test(t, http.StatusInternalServerError, "flush failed (500): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("503", func(t *testing.T) {
-		test(t, http.StatusServiceUnavailable, "flush failed (503): [503 Service Unavailable] ")
+		test(t, http.StatusServiceUnavailable, "flush failed (503): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 	t.Run("504", func(t *testing.T) {
-		test(t, http.StatusGatewayTimeout, "flush failed (504): [504 Gateway Timeout] ")
+		test(t, http.StatusGatewayTimeout, "flush failed (504): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
 	})
 }
 
@@ -747,7 +752,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 		for i, item := range result.Items {
 			itemResp := item["create"]
 			itemResp.Index = "an_index"
-			switch i % 4 {
+			switch i % 5 {
 			case 0:
 				itemResp.Error.Type = "error_type"
 				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
@@ -760,7 +765,9 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 			case 3:
 				itemResp.Error.Type = "x_content_parse_exception"
 				itemResp.Error.Reason = "this reason should not be logged"
-
+			case 4:
+				itemResp.Error.Type = "document_parsing_exception"
+				itemResp.Error.Reason = "this reason should not be logged"
 			}
 			item["create"] = itemResp
 		}
@@ -776,7 +783,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	const N = 4 * 2
+	const N = 5 * 2
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
@@ -788,14 +795,16 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 		return entries[i].Message < entries[j].Message
 	})
 	require.Len(t, entries, N/2)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[0].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (document_parsing_exception): ", entries[0].Message)
 	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[1].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[1].Message)
 	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[2].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[2].Message)
 	assert.Equal(t, int64(2), entries[2].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): ", entries[3].Message)
+	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[3].Message)
 	assert.Equal(t, int64(2), entries[3].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): ", entries[4].Message)
+	assert.Equal(t, int64(2), entries[4].Context[0].Integer)
 }
 
 func TestAppenderRetryLimit(t *testing.T) {
@@ -1041,7 +1050,9 @@ func TestAppenderRetryDocument(t *testing.T) {
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
 				case "elasticsearch.events.retried":
-					assertCounter(m, 5, *attribute.EmptySet())
+					assertCounter(m, 5, attribute.NewSet(
+						attribute.Int("greatest_retry", 1),
+					))
 				}
 			})
 			assert.Equal(t, int64(1), asserted.Load())
@@ -1059,7 +1070,9 @@ func TestAppenderRetryDocument(t *testing.T) {
 			docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 				switch m.Name {
 				case "elasticsearch.events.retried":
-					assertCounter(m, 5, *attribute.EmptySet())
+					assertCounter(m, 5, attribute.NewSet(
+						attribute.Int("greatest_retry", 2),
+					))
 				}
 			})
 			assert.Equal(t, int64(2), asserted.Load())
