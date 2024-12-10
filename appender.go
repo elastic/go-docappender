@@ -75,6 +75,7 @@ type Appender struct {
 	availableBulkRequests  int64
 	activeCreated          int64
 	activeDestroyed        int64
+	blockedAdd             int64
 
 	scalingInfo atomic.Value
 
@@ -278,6 +279,10 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Index: index,
 		Body:  document,
 	}
+	if len(a.bulkItems) == cap(a.bulkItems) {
+		a.addCount(1, &a.blockedAdd, a.metrics.blockedAdd)
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
