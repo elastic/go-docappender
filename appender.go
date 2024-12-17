@@ -271,12 +271,20 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return errMissingBody
 	}
 
+	var traceID LinkedTraceID
+	if a.tracingEnabled() {
+		traceID = LinkedTraceID(apm.TransactionFromContext(ctx).TraceContext().Trace)
+	} else if a.otelTracingEnabled() {
+		traceID = LinkedTraceID(trace.SpanContextFromContext(ctx).TraceID())
+	}
+
 	// Send the BulkIndexerItem to the internal channel, allowing individual
 	// documents to be processed by an active bulk indexer in a dedicated
 	// goroutine, improving data locality and minimising lock contention.
 	item := BulkIndexerItem{
-		Index: index,
-		Body:  document,
+		Index:         index,
+		Body:          document,
+		LinkedTraceID: traceID,
 	}
 	select {
 	case <-ctx.Done():
@@ -325,6 +333,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		defer tx.End()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
+		linkedTraceIDs := bulkIndexer.LinkedTraceIDs()
+		for _, id := range linkedTraceIDs {
+			tx.AddLink(apm.SpanLink{Trace: apm.TraceID(id)})
+		}
+
 		// Add trace IDs to logger, to associate any per-item errors
 		// below with the trace.
 		logger = logger.With(apmzap.TraceContext(ctx)...)
@@ -333,6 +346,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			attribute.Int("documents", n),
 		))
 		defer span.End()
+
+		linkedTraceIDs := bulkIndexer.LinkedTraceIDs()
+		for _, id := range linkedTraceIDs {
+			ctx := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID(id)})
+			span.AddLink(trace.Link{SpanContext: ctx})
+		}
 
 		// Add trace IDs to logger, to associate any per-item errors
 		// below with the trace.
