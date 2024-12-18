@@ -96,7 +96,7 @@ type BulkIndexer struct {
 	copyBuf            []byte
 	buf                bytes.Buffer
 	retryCounts        map[int]int
-	likedTraceIDs      map[int]LinkedTraceID
+	linkedTraces       map[int]LinkedTraceContext
 	requireDataStream  bool
 }
 
@@ -210,7 +210,7 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	b := &BulkIndexer{
 		config:            cfg,
 		retryCounts:       make(map[int]int),
-		likedTraceIDs:     make(map[int]LinkedTraceID),
+		linkedTraces:      make(map[int]LinkedTraceContext),
 		requireDataStream: cfg.RequireDataStream,
 	}
 
@@ -271,23 +271,21 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 	return b.bytesUncompFlushed
 }
 
-// LinkedTraceIDs returns the list of all linked trace ids for the bulk indexer.
-func (b *BulkIndexer) LinkedTraceIDs() []LinkedTraceID {
-	traceIDs := make([]LinkedTraceID, 0, len(b.likedTraceIDs))
-	for _, id := range b.likedTraceIDs {
-		traceIDs = append(traceIDs, id)
+// LinkedTraces returns the list of all linked trace context for the bulk indexer.
+func (b *BulkIndexer) LinkedTraces() []LinkedTraceContext {
+	traces := make([]LinkedTraceContext, 0, len(b.linkedTraces))
+	for _, t := range b.linkedTraces {
+		traces = append(traces, t)
 	}
-	return traceIDs
+	return traces
 }
 
-type LinkedTraceID [16]byte
-
 type BulkIndexerItem struct {
-	Index            string
-	DocumentID       string
-	Body             io.WriterTo
-	DynamicTemplates map[string]string
-	LinkedTraceID    LinkedTraceID
+	Index              string
+	DocumentID         string
+	Body               io.WriterTo
+	DynamicTemplates   map[string]string
+	LinkedTraceContext LinkedTraceContext
 }
 
 // Add encodes an item in the buffer.
@@ -299,7 +297,7 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	if _, err := b.writer.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
-	b.likedTraceIDs[b.itemsAdded] = item.LinkedTraceID
+	b.linkedTraces[b.itemsAdded] = item.LinkedTraceContext
 	b.itemsAdded++
 	return nil
 }
@@ -457,7 +455,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// the buffer is being read lazily
 		seen := 0
 
-		linkedTracesIDs := make(map[int]LinkedTraceID, len(resp.FailedDocs))
+		linkedTraces := make(map[int]LinkedTraceContext, len(resp.FailedDocs))
 		for _, res := range resp.FailedDocs {
 			if b.shouldRetryOnStatus(res.Status) {
 				// there are two lines for each document:
@@ -483,7 +481,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// to be updated to match the next current buffer position.
 				b.retryCounts[b.itemsAdded] = count
 				// Only copy linked traces that should be retried in the next cycle.
-				linkedTracesIDs[b.itemsAdded] = b.likedTraceIDs[res.Position]
+				linkedTraces[b.itemsAdded] = b.linkedTraces[res.Position]
 
 				if b.gzipw != nil {
 					// First loop, read from the gzip reader
@@ -557,7 +555,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				tmp = append(tmp, res)
 			}
 		}
-		b.likedTraceIDs = linkedTracesIDs
+		b.linkedTraces = linkedTraces
 
 		// FailedDocs contain responses of
 		// - non-retriable errors

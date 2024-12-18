@@ -271,20 +271,20 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return errMissingBody
 	}
 
-	var traceID LinkedTraceID
+	var linkedTraceContext LinkedTraceContext
 	if a.tracingEnabled() {
-		traceID = LinkedTraceID(apm.TransactionFromContext(ctx).TraceContext().Trace)
+		linkedTraceContext = NewLinkedTraceContextFromAPM(apm.TransactionFromContext(ctx).TraceContext())
 	} else if a.otelTracingEnabled() {
-		traceID = LinkedTraceID(trace.SpanContextFromContext(ctx).TraceID())
+		linkedTraceContext = NewLinkedTraceIDFromOTEL(trace.SpanContextFromContext(ctx))
 	}
 
 	// Send the BulkIndexerItem to the internal channel, allowing individual
 	// documents to be processed by an active bulk indexer in a dedicated
 	// goroutine, improving data locality and minimising lock contention.
 	item := BulkIndexerItem{
-		Index:         index,
-		Body:          document,
-		LinkedTraceID: traceID,
+		Index:              index,
+		Body:               document,
+		LinkedTraceContext: linkedTraceContext,
 	}
 	select {
 	case <-ctx.Done():
@@ -333,9 +333,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		defer tx.End()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
-		linkedTraceIDs := bulkIndexer.LinkedTraceIDs()
-		for _, id := range linkedTraceIDs {
-			tx.AddLink(apm.SpanLink{Trace: apm.TraceID(id)})
+		linkedTraces := bulkIndexer.LinkedTraces()
+		for _, c := range linkedTraces {
+			tx.AddLink(c.APMLink())
 		}
 
 		// Add trace IDs to logger, to associate any per-item errors
@@ -347,10 +347,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		))
 		defer span.End()
 
-		linkedTraceIDs := bulkIndexer.LinkedTraceIDs()
-		for _, id := range linkedTraceIDs {
-			ctx := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID(id)})
-			span.AddLink(trace.Link{SpanContext: ctx})
+		linkedTraces := bulkIndexer.LinkedTraces()
+		for _, c := range linkedTraces {
+			span.AddLink(c.OTELLink())
 		}
 
 		// Add trace IDs to logger, to associate any per-item errors
