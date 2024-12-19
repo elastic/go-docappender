@@ -271,7 +271,7 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return errMissingBody
 	}
 
-	var linkedTraceContext linkedTraceContext
+	var linkedTraceContext *linkedTraceContext
 	if a.tracingEnabled() {
 		linkedTraceContext = newLinkedTraceContextFromAPM(apm.TransactionFromContext(ctx).TraceContext())
 	} else if a.otelTracingEnabled() {
@@ -326,11 +326,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
 
 	logger := a.config.Logger
+	var duration *time.Duration
 	var span trace.Span
 	if a.tracingEnabled() {
 		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
 		tx.Context.SetLabel("documents", n)
 		defer tx.End()
+		defer func() {
+			if duration != nil {
+				span := tx.StartSpan("docappender.buffering", "", nil)
+				span.Duration = *duration
+				span.End()
+			}
+		}()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
 		linkedTraces := bulkIndexer.uniqueLinkedTraces()
@@ -346,6 +354,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			attribute.Int("documents", n),
 		))
 		defer span.End()
+		defer func() {
+			if duration != nil {
+				ts := time.Now().Add(*duration)
+				_, span := a.tracer.Start(ctx, "docappender.buffering")
+				span.End(trace.WithTimestamp(ts))
+			}
+		}()
 
 		linkedTraces := bulkIndexer.uniqueLinkedTraces()
 		for _, c := range linkedTraces {
@@ -428,6 +443,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
 	)
+	duration = &resp.BufferingDuration
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {

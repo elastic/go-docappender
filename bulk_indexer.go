@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -98,12 +99,14 @@ type BulkIndexer struct {
 	retryCounts        map[int]int
 	linkedTraces       map[int]linkedTraceContext
 	requireDataStream  bool
+	bufferingTimestamp int64
 }
 
 type BulkIndexerResponseStat struct {
-	Indexed     int64
-	RetriedDocs int64
-	FailedDocs  []BulkIndexerResponseItem
+	Indexed           int64
+	RetriedDocs       int64
+	FailedDocs        []BulkIndexerResponseItem
+	BufferingDuration time.Duration
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -288,7 +291,7 @@ type BulkIndexerItem struct {
 	DocumentID         string
 	Body               io.WriterTo
 	DynamicTemplates   map[string]string
-	linkedTraceContext linkedTraceContext
+	linkedTraceContext *linkedTraceContext
 }
 
 // Add encodes an item in the buffer.
@@ -300,7 +303,12 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	if _, err := b.writer.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
-	b.linkedTraces[b.itemsAdded] = item.linkedTraceContext
+	if b.itemsAdded == 0 {
+		b.bufferingTimestamp = time.Now().UnixMilli()
+	}
+	if item.linkedTraceContext != nil {
+		b.linkedTraces[b.itemsAdded] = *item.linkedTraceContext
+	}
 	b.itemsAdded++
 	return nil
 }
@@ -404,6 +412,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesFlushed = bytesFlushed
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
+	resp.BufferingDuration = time.Since(time.UnixMilli(b.bufferingTimestamp))
 	if res.IsError() {
 		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
 		switch {

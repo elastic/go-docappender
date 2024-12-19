@@ -38,15 +38,21 @@ func (c linkedTraceContext) OTELLink() trace.Link {
 	})}
 }
 
-func newLinkedTraceContextFromAPM(ctx apm.TraceContext) linkedTraceContext {
-	return linkedTraceContext{
+func newLinkedTraceContextFromAPM(ctx apm.TraceContext) *linkedTraceContext {
+	if err := ctx.Trace.Validate(); err != nil {
+		return nil
+	}
+	return &linkedTraceContext{
 		TraceID: ctx.Trace,
 		SpanID:  ctx.Span,
 	}
 }
 
-func newLinkedTraceIDFromOTEL(ctx trace.SpanContext) linkedTraceContext {
-	return linkedTraceContext{
+func newLinkedTraceIDFromOTEL(ctx trace.SpanContext) *linkedTraceContext {
+	if !ctx.HasTraceID() || !ctx.HasSpanID() {
+		return nil
+	}
+	return &linkedTraceContext{
 		TraceID: ctx.TraceID(),
 		SpanID:  ctx.SpanID(),
 	}
