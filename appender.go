@@ -271,11 +271,11 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return errMissingBody
 	}
 
-	var linkedTraceContext LinkedTraceContext
+	var linkedTraceContext linkedTraceContext
 	if a.tracingEnabled() {
-		linkedTraceContext = NewLinkedTraceContextFromAPM(apm.TransactionFromContext(ctx).TraceContext())
+		linkedTraceContext = newLinkedTraceContextFromAPM(apm.TransactionFromContext(ctx).TraceContext())
 	} else if a.otelTracingEnabled() {
-		linkedTraceContext = NewLinkedTraceIDFromOTEL(trace.SpanContextFromContext(ctx))
+		linkedTraceContext = newLinkedTraceIDFromOTEL(trace.SpanContextFromContext(ctx))
 	}
 
 	// Send the BulkIndexerItem to the internal channel, allowing individual
@@ -284,7 +284,7 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 	item := BulkIndexerItem{
 		Index:              index,
 		Body:               document,
-		LinkedTraceContext: linkedTraceContext,
+		linkedTraceContext: linkedTraceContext,
 	}
 	select {
 	case <-ctx.Done():
@@ -333,7 +333,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		defer tx.End()
 		ctx = apm.ContextWithTransaction(ctx, tx)
 
-		linkedTraces := bulkIndexer.LinkedTraces()
+		linkedTraces := bulkIndexer.uniqueLinkedTraces()
 		for _, c := range linkedTraces {
 			tx.AddLink(c.APMLink())
 		}
@@ -347,7 +347,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		))
 		defer span.End()
 
-		linkedTraces := bulkIndexer.LinkedTraces()
+		linkedTraces := bulkIndexer.uniqueLinkedTraces()
 		for _, c := range linkedTraces {
 			span.AddLink(c.OTELLink())
 		}

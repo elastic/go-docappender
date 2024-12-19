@@ -22,31 +22,31 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type LinkedTraceContext struct {
+type linkedTraceContext struct {
 	TraceID [16]byte
 	SpanID  [8]byte
 }
 
-func (c LinkedTraceContext) APMLink() apm.SpanLink {
+func (c linkedTraceContext) APMLink() apm.SpanLink {
 	return apm.SpanLink{Trace: c.TraceID, Span: c.SpanID}
 }
 
-func (c LinkedTraceContext) OTELLink() trace.Link {
+func (c linkedTraceContext) OTELLink() trace.Link {
 	return trace.Link{SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID: c.TraceID,
 		SpanID:  c.SpanID,
 	})}
 }
 
-func NewLinkedTraceContextFromAPM(ctx apm.TraceContext) LinkedTraceContext {
-	return LinkedTraceContext{
+func newLinkedTraceContextFromAPM(ctx apm.TraceContext) linkedTraceContext {
+	return linkedTraceContext{
 		TraceID: ctx.Trace,
 		SpanID:  ctx.Span,
 	}
 }
 
-func NewLinkedTraceIDFromOTEL(ctx trace.SpanContext) LinkedTraceContext {
-	return LinkedTraceContext{
+func newLinkedTraceIDFromOTEL(ctx trace.SpanContext) linkedTraceContext {
+	return linkedTraceContext{
 		TraceID: ctx.TraceID(),
 		SpanID:  ctx.SpanID(),
 	}

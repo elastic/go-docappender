@@ -96,7 +96,7 @@ type BulkIndexer struct {
 	copyBuf            []byte
 	buf                bytes.Buffer
 	retryCounts        map[int]int
-	linkedTraces       map[int]LinkedTraceContext
+	linkedTraces       map[int]linkedTraceContext
 	requireDataStream  bool
 }
 
@@ -210,7 +210,7 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 	b := &BulkIndexer{
 		config:            cfg,
 		retryCounts:       make(map[int]int),
-		linkedTraces:      make(map[int]LinkedTraceContext),
+		linkedTraces:      make(map[int]linkedTraceContext),
 		requireDataStream: cfg.RequireDataStream,
 	}
 
@@ -271,10 +271,13 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 	return b.bytesUncompFlushed
 }
 
-// LinkedTraces returns the list of all linked trace context for the bulk indexer.
-func (b *BulkIndexer) LinkedTraces() []LinkedTraceContext {
-	traces := make([]LinkedTraceContext, 0, len(b.linkedTraces))
+func (b *BulkIndexer) uniqueLinkedTraces() []linkedTraceContext {
+	unique := make(map[linkedTraceContext]struct{}, len(b.linkedTraces))
 	for _, t := range b.linkedTraces {
+		unique[t] = struct{}{}
+	}
+	traces := make([]linkedTraceContext, 0, len(unique))
+	for t := range unique {
 		traces = append(traces, t)
 	}
 	return traces
@@ -285,7 +288,7 @@ type BulkIndexerItem struct {
 	DocumentID         string
 	Body               io.WriterTo
 	DynamicTemplates   map[string]string
-	LinkedTraceContext LinkedTraceContext
+	linkedTraceContext linkedTraceContext
 }
 
 // Add encodes an item in the buffer.
@@ -297,7 +300,7 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	if _, err := b.writer.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
-	b.linkedTraces[b.itemsAdded] = item.LinkedTraceContext
+	b.linkedTraces[b.itemsAdded] = item.linkedTraceContext
 	b.itemsAdded++
 	return nil
 }
@@ -455,7 +458,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// the buffer is being read lazily
 		seen := 0
 
-		linkedTraces := make(map[int]LinkedTraceContext, len(resp.FailedDocs))
+		linkedTraces := make(map[int]linkedTraceContext, len(resp.FailedDocs))
 		for _, res := range resp.FailedDocs {
 			if b.shouldRetryOnStatus(res.Status) {
 				// there are two lines for each document:
