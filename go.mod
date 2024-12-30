@@ -3,10 +3,10 @@ module github.com/elastic/go-docappender/v2
 go 1.22
 
 require (
-	github.com/elastic/go-elasticsearch/v8 v8.16.0
+	github.com/elastic/go-elasticsearch/v8 v8.17.0
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.17.11
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.2
 	go.elastic.co/apm/module/apmzap/v2 v2.6.2
 	go.elastic.co/apm/v2 v2.6.2
@@ -17,7 +17,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.32.0
 	go.opentelemetry.io/otel/trace v1.32.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/sync v0.9.0
+	golang.org/x/sync v0.10.0
 )
 
 require (

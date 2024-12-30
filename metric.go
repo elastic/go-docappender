@@ -38,6 +38,7 @@ type metrics struct {
 	availableBulkRequests  metric.Int64UpDownCounter
 	activeCreated          metric.Int64Counter
 	activeDestroyed        metric.Int64Counter
+	blockedAdd             metric.Int64Counter
 }
 
 type histogramMetric struct {
@@ -131,6 +132,11 @@ func newMetrics(cfg Config) (metrics, error) {
 			name:        "elasticsearch.indexer.destroyed",
 			description: "The number of times an active indexer was destroyed.",
 			p:           &ms.activeDestroyed,
+		},
+		{
+			name:        "docappender.blocked.add",
+			description: "The number of times Add could block due to exhausted capacity in bulkItems channel",
+			p:           &ms.blockedAdd,
 		},
 	}
 	for _, m := range counters {
