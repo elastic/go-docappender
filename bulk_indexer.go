@@ -279,13 +279,14 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 type BulkIndexerItem struct {
 	Index            string
 	DocumentID       string
+	Pipeline         string
 	Body             io.WriterTo
 	DynamicTemplates map[string]string
 }
 
 // Add encodes an item in the buffer.
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
-	b.writeMeta(item.Index, item.DocumentID, item.DynamicTemplates)
+	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, item.DynamicTemplates)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -296,7 +297,7 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	return nil
 }
 
-func (b *BulkIndexer) writeMeta(index, documentID string, dynamicTemplates map[string]string) {
+func (b *BulkIndexer) writeMeta(index, documentID, pipeline string, dynamicTemplates map[string]string) {
 	b.jsonw.RawString(`{"create":{`)
 	first := true
 	if documentID != "" {
@@ -310,6 +311,14 @@ func (b *BulkIndexer) writeMeta(index, documentID string, dynamicTemplates map[s
 		}
 		b.jsonw.RawString(`"_index":`)
 		b.jsonw.String(index)
+		first = false
+	}
+	if pipeline != "" {
+		if !first {
+			b.jsonw.RawByte(',')
+		}
+		b.jsonw.RawString(`"pipeline":`)
+		b.jsonw.String(pipeline)
 		first = false
 	}
 	if len(dynamicTemplates) > 0 {
