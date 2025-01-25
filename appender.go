@@ -416,6 +416,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
 	)
+	failureStore := resp.FailureStore
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -459,6 +460,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
 		)
 	}
+	docsIndexed -= failureStore.Used
 	if docsIndexed > 0 {
 		a.addCount(docsIndexed, &a.docsIndexed,
 			a.metrics.docsIndexed,
@@ -481,6 +483,24 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.addCount(serverFailed, &a.docsFailedServer,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
+		)
+	}
+	if failureStore.Used > 0 {
+		a.addCount(failureStore.Used, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("failure_store", "used")),
+		)
+	}
+	if failureStore.Failed > 0 {
+		a.addCount(failureStore.Failed, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("failure_store", "failed")),
+		)
+	}
+	if failureStore.Unknown > 0 {
+		a.addCount(failureStore.Unknown, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(attribute.String("failure_store", "unknown")),
 		)
 	}
 	logger.Debug(
