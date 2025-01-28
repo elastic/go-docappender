@@ -165,3 +165,41 @@ func TestDynamicTemplates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
+
+func TestPipeline(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result, _, _, pipelines := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+		for _, p := range pipelines {
+			require.Contains(t, p, "test-pipeline", "test-pipeline should have been present")
+		}
+		require.Equal(t, 2, len(pipelines), "2 pipelines should have been returned")
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index:    "testidx",
+		Pipeline: "test-pipeline1",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index:    "testidx",
+		Pipeline: "test-pipeline2",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	require.NoError(t, err)
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stat.Indexed)
+}
