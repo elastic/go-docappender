@@ -70,6 +70,8 @@ type Appender struct {
 	docsFailedClient       int64
 	docsFailedServer       int64
 	docsIndexed            int64
+	docsFailureStoreUsed   int64
+	docsFailureStoreFailed int64
 	tooManyRequests        int64
 	bytesTotal             int64
 	bytesUncompressedTotal int64
@@ -255,6 +257,8 @@ func (a *Appender) Stats() Stats {
 		IndexersActive:         a.scalingInformation().activeIndexers,
 		IndexersCreated:        atomic.LoadInt64(&a.activeCreated),
 		IndexersDestroyed:      atomic.LoadInt64(&a.activeDestroyed),
+		FailureStoreUsed:       atomic.LoadInt64(&a.docsFailureStoreUsed),
+		FailureStoreFailed:     atomic.LoadInt64(&a.docsFailureStoreFailed),
 	}
 }
 
@@ -484,13 +488,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		)
 	}
 	if failureStore.Used > 0 {
-		a.addCount(failureStore.Used, nil,
+		a.addCount(failureStore.Used, &a.docsFailureStoreUsed,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("failure_store", "used")),
 		)
 	}
 	if failureStore.Failed > 0 {
-		a.addCount(failureStore.Failed, nil,
+		a.addCount(failureStore.Failed, &a.docsFailureStoreFailed,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("failure_store", "failed")),
 		)
@@ -847,6 +851,14 @@ type Stats struct {
 
 	// IndexersDestroyed represents the number of times an active indexer was destroyed.
 	IndexersDestroyed int64
+
+	// FailureStoreUsed represents the number of indexing operations that have resolved
+	// in indexing to failure store.
+	FailureStoreUsed int64
+
+	// FailureStoreFailed represents the number of indexing operations that have failed
+	// while indexing to failure store.
+	FailureStoreFailed int64
 }
 
 func timeFunc(f func()) time.Duration {
