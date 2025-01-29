@@ -67,6 +67,19 @@ func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 	res esutil.BulkIndexerResponse,
 	stats RequestStats,
 	dynamicTemplates []map[string]string) {
+
+	indexed, result, stats, dynamicTemplates, _ := DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
+	return indexed, result, stats, dynamicTemplates
+}
+
+// DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines decodes a /_bulk request's body,
+// returning the decoded documents and a response body and stats about request, per-request dynamic templates and pipelines specified in the event.
+func DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r *http.Request) (
+	docs [][]byte,
+	res esutil.BulkIndexerResponse,
+	stats RequestStats,
+	dynamicTemplates []map[string]string,
+	pipelines []string) {
 	body := r.Body
 	switch r.Header.Get("Content-Encoding") {
 	case "gzip":
@@ -89,6 +102,7 @@ func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 		action := make(map[string]struct {
 			Index            string            `json:"_index"`
 			DynamicTemplates map[string]string `json:"dynamic_templates"`
+			Pipeline         string            `json:"pipeline"`
 		})
 		if err := json.NewDecoder(strings.NewReader(scanner.Text())).Decode(&action); err != nil {
 			panic(err)
@@ -109,8 +123,9 @@ func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
 		dynamicTemplates = append(dynamicTemplates, action[actionType].DynamicTemplates)
+		pipelines = append(pipelines, action[actionType].Pipeline)
 	}
-	return indexed, result, RequestStats{int64(cr.bytesRead)}, dynamicTemplates
+	return indexed, result, RequestStats{int64(cr.bytesRead)}, dynamicTemplates, pipelines
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
