@@ -409,13 +409,12 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		return err
 	}
-	var (
-		docsFailed, docsIndexed,
+	var docsFailed, docsIndexed,
 		// breakdown of failed docs:
 		tooManyRequests, // failed after document retries (if it applies) and final status is 429
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
-	)
+
 	failureStore := resp.FailureStore
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
@@ -460,7 +459,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
 		)
 	}
-	docsIndexed -= failureStore.Used
 	if docsIndexed > 0 {
 		a.addCount(docsIndexed, &a.docsIndexed,
 			a.metrics.docsIndexed,
@@ -508,6 +506,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
+		zap.Int64("docs_failure_store_used", failureStore.Used),
+		zap.Int64("docs_failure_store_failed", failureStore.Failed),
+		zap.Int64("docs_failure_store_unknown", failureStore.Unknown),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")
