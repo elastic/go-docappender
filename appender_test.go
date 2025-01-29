@@ -753,7 +753,6 @@ func TestAppenderFlushRequestError(t *testing.T) {
 			}
 		})
 		assert.Equal(t, int64(1), asserted.Load())
-
 	}
 	t.Run("400", func(t *testing.T) {
 		test(t, http.StatusBadRequest, "flush failed (400): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
@@ -806,7 +805,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 
 	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
 	indexer, err := docappender.New(client, docappender.Config{
-		FlushBytes: 500,
+		FlushBytes: 5000,
 		Logger:     zap.New(core),
 	})
 	require.NoError(t, err)
@@ -1372,7 +1371,8 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		BytesTotal:             bytesTotal,
 		BytesUncompressedTotal: bytesUncompressedTotal,
 		AvailableBulkRequests:  10,
-		IndexersActive:         0}, indexer.Stats())
+		IndexersActive:         0,
+	}, indexer.Stats())
 }
 
 func TestAppenderPipeline(t *testing.T) {
