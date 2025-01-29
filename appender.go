@@ -35,6 +35,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -75,6 +76,7 @@ type Appender struct {
 	availableBulkRequests  int64
 	activeCreated          int64
 	activeDestroyed        int64
+	blockedAdd             int64
 
 	scalingInfo atomic.Value
 
@@ -278,6 +280,10 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Index: index,
 		Body:  document,
 	}
+	if len(a.bulkItems) == cap(a.bulkItems) {
+		a.addCount(1, &a.blockedAdd, a.metrics.blockedAdd)
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -397,7 +403,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			}
 			if status != "" {
 				a.addCount(int64(n), legacy, a.metrics.docsIndexed,
-					metric.WithAttributes(attribute.String("status", status)),
+					metric.WithAttributes(attribute.String("status", status), semconv.HTTPResponseStatusCode(errFailed.statusCode)),
 				)
 			}
 		}
