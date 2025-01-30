@@ -397,7 +397,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// See: https://github.com/golang/go/issues/51907
 		Body:       bytes.NewReader(b.buf.Bytes()),
 		Header:     make(http.Header),
-		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
+		FilterPath: []string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"},
 		Pipeline:   b.config.Pipeline,
 	}
 	if b.requireDataStream {
