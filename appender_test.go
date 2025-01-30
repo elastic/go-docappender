@@ -26,7 +26,6 @@ import (
 	"io"
 	"net/http"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -680,6 +679,7 @@ func TestAppenderFlushBytes(t *testing.T) {
 }
 
 func TestAppenderFlushRequestError(t *testing.T) {
+	error := []byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`)
 	// This test ensures that the appender correctly categorizes and quantifies
 	// failed requests with different failure scenarios. Since a bulk request
 	// contains N documents, the appender should increment the categorized
@@ -692,7 +692,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 			_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
 			bytesUncompressedTotal += stat.UncompressedBytes
 			w.WriteHeader(sc)
-			w.Write([]byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`))
+			w.Write(error)
 		})
 
 		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
@@ -756,84 +756,23 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 	}
 	t.Run("400", func(t *testing.T) {
-		test(t, http.StatusBadRequest, "flush failed (400): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] "+string(error))
 	})
 	t.Run("403", func(t *testing.T) {
-		test(t, http.StatusForbidden, "flush failed (403): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusForbidden, "flush failed (403): [403 Forbidden] "+string(error))
 	})
 	t.Run("429", func(t *testing.T) {
-		test(t, http.StatusTooManyRequests, "flush failed (429): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusTooManyRequests, "flush failed (429): [429 Too Many Requests] "+string(error))
 	})
 	t.Run("500", func(t *testing.T) {
-		test(t, http.StatusInternalServerError, "flush failed (500): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] "+string(error))
 	})
 	t.Run("503", func(t *testing.T) {
-		test(t, http.StatusServiceUnavailable, "flush failed (503): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusServiceUnavailable, "flush failed (503): [503 Service Unavailable] "+string(error))
 	})
 	t.Run("504", func(t *testing.T) {
-		test(t, http.StatusGatewayTimeout, "flush failed (504): {\"error\":{\"type\":\"x_content_parse_exception\",\"caused_by\":{\"type\":\"json_parse_exception\"}}}")
+		test(t, http.StatusGatewayTimeout, "flush failed (504): [504 Gateway Timeout] "+string(error))
 	})
-}
-
-func TestAppenderIndexFailedLogging(t *testing.T) {
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, result := docappendertest.DecodeBulkRequest(r)
-		for i, item := range result.Items {
-			itemResp := item["create"]
-			itemResp.Index = "an_index"
-			switch i % 5 {
-			case 0:
-				itemResp.Error.Type = "error_type"
-				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
-			case 1:
-				itemResp.Error.Type = "error_type"
-				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
-			case 2:
-				itemResp.Error.Type = "unavailable_shards_exception"
-				itemResp.Error.Reason = "this reason should not be logged"
-			case 3:
-				itemResp.Error.Type = "x_content_parse_exception"
-				itemResp.Error.Reason = "this reason should not be logged"
-			case 4:
-				itemResp.Error.Type = "document_parsing_exception"
-				itemResp.Error.Reason = "this reason should not be logged"
-			}
-			item["create"] = itemResp
-		}
-		result.HasErrors = true
-		json.NewEncoder(w).Encode(result)
-	})
-
-	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
-	indexer, err := docappender.New(client, docappender.Config{
-		FlushBytes: 500,
-		Logger:     zap.New(core),
-	})
-	require.NoError(t, err)
-	defer indexer.Close(context.Background())
-
-	const N = 5 * 2
-	for i := 0; i < N; i++ {
-		addMinimalDoc(t, indexer, "logs-foo-testing")
-	}
-	err = indexer.Close(context.Background())
-	assert.NoError(t, err)
-
-	entries := observed.FilterMessageSnippet("failed to index").TakeAll()
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Message < entries[j].Message
-	})
-	require.Len(t, entries, N/2)
-	assert.Equal(t, "failed to index documents in 'an_index' (document_parsing_exception): ", entries[0].Message)
-	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_even", entries[1].Message)
-	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (error_type): error_reason_odd", entries[2].Message)
-	assert.Equal(t, int64(2), entries[2].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[3].Message)
-	assert.Equal(t, int64(2), entries[3].Context[0].Integer)
-	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): ", entries[4].Message)
-	assert.Equal(t, int64(2), entries[4].Context[0].Integer)
 }
 
 func TestAppenderRetryLimit(t *testing.T) {

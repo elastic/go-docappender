@@ -20,13 +20,11 @@ package docappender
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
-	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -146,13 +144,7 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										reason := i.ReadString()
-										// Match Elasticsearch field mapper field value:
-										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-										item.Error.Reason, _, _ = strings.Cut(
-											reason, ". Preview",
-										)
+										item.Error.Reason = i.ReadString()
 									default:
 										i.Skip()
 									}
@@ -163,10 +155,6 @@ func init() {
 							}
 							return true
 						})
-						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" || item.Error.Type == "document_parsing_exception" {
-							item.Error.Reason = ""
-						}
 
 						item.Position = idx
 						idx++
@@ -374,10 +362,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
 		// internal member variables (b.buf.off, b.buf.lastRead).
 		// See: https://github.com/golang/go/issues/51907
-		Body:       bytes.NewReader(b.buf.Bytes()),
-		Header:     make(http.Header),
-		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
-		Pipeline:   b.config.Pipeline,
+		Body:                 bytes.NewReader(b.buf.Bytes()),
+		Header:               make(http.Header),
+		FilterPath:           []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
+		Pipeline:             b.config.Pipeline,
+		//IncludeSourceOnError: false,
 	}
 	if b.requireDataStream {
 		req.RequireDataStream = &b.requireDataStream
@@ -405,27 +394,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.IsError() {
-		var s string
-		var er struct {
-			Error struct {
-				Type     string `json:"type,omitempty"`
-				Reason   string `json:"reason,omitempty"`
-				CausedBy struct {
-					Type   string `json:"type,omitempty"`
-					Reason string `json:"reason,omitempty"`
-				} `json:"caused_by,omitempty"`
-			} `json:"error,omitempty"`
-		}
-
-		if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
-			er.Error.Reason = ""
-			er.Error.CausedBy.Reason = ""
-
-			b, _ := json.Marshal(&er)
-			s = string(b)
-		}
-
-		e := errorFlushFailed{resp: s, statusCode: res.StatusCode}
+		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
