@@ -419,7 +419,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
 
-	failureStore := resp.FailureStore
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -487,22 +486,16 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
 		)
 	}
-	if failureStore.Used > 0 {
-		a.addCount(failureStore.Used, &a.docsFailureStoreUsed,
+	if resp.FailureStoreUsed > 0 {
+		a.addCount(resp.FailureStoreUsed, &a.docsFailureStoreUsed,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("failure_store", "used")),
 		)
 	}
-	if failureStore.Failed > 0 {
-		a.addCount(failureStore.Failed, &a.docsFailureStoreFailed,
+	if resp.FailureStoreFailed > 0 {
+		a.addCount(resp.FailureStoreFailed, &a.docsFailureStoreFailed,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("failure_store", "failed")),
-		)
-	}
-	if failureStore.Unknown > 0 {
-		a.addCount(failureStore.Unknown, nil,
-			a.metrics.docsIndexed,
-			metric.WithAttributes(attribute.String("failure_store", "unknown")),
 		)
 	}
 	logger.Debug(
@@ -510,9 +503,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
-		zap.Int64("docs_failure_store_used", failureStore.Used),
-		zap.Int64("docs_failure_store_failed", failureStore.Failed),
-		zap.Int64("docs_failure_store_unknown", failureStore.Unknown),
+		zap.Int64("docs_failure_store_used", resp.FailureStoreUsed),
+		zap.Int64("docs_failure_store_failed", resp.FailureStoreFailed),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")

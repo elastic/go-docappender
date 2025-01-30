@@ -105,12 +105,10 @@ type BulkIndexerResponseStat struct {
 	Indexed int64
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
-	// FailureStore contains the stats for the documents indexed to failure store.
-	FailureStore struct {
-		Used    int64
-		Failed  int64
-		Unknown int64
-	}
+	// FailureStoreUsed contains the total number of documents indexed to failure store.
+	FailureStoreUsed int64
+	// FailureStoreFailed contains the total number of documents which failed when indexed to failure store.
+	FailureStoreFailed int64
 	// GreatestRetry contains the greatest observed retry count in the entire
 	// bulk request.
 	GreatestRetry int
@@ -150,16 +148,14 @@ func init() {
 								// For the stats the only actionable failure store statuses:
 								// "used" which represents that this document was stored in the failure store successfully.
 								// "failed" which represents that this document was rejected from the failure store.
-								// "not_applicable_or_unknown"represents that there is no information about this response or that the failure store is not applicable.
 								// Ignored non actionable statuses:
+								// "not_applicable_or_unknown" implicit status which represents that there is no information about this response or that the failure store is not applicable.
 								// "not_enabled" which represents that this document was rejected, but it could have ended up in the failure store if it was enabled.
 								switch fs := i.ReadString(); fs {
 								case "used":
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Used++
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreUsed++
 								case "failed":
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Failed++
-								case "not_applicable_or_unknown":
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Unknown++
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreFailed++
 								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
