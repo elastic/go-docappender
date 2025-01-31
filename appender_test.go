@@ -181,7 +181,14 @@ loop:
 				assert.Equal(t, stats.TooManyRequests, dp.Value)
 			case "FailureStore":
 				processedAsserted++
-				assert.Equal(t, stats.TooManyRequests, dp.Value)
+				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
+				assert.True(t, exist)
+				switch docappender.FailureStoreStatus(fs.AsString()) {
+				case docappender.FailureStoreStatusUsed:
+					assert.Equal(t, stats.FailureStoreUsed, dp.Value)
+				case docappender.FailureStoreStatusFailed:
+					assert.Equal(t, stats.FailureStoreFailed, dp.Value)
+				}
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
 			}
