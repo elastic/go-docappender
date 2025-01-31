@@ -175,7 +175,6 @@ func init() {
 									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Failed++
 								case FailureStoreStatusNotEnabled:
 									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.NotEnabled++
-
 								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {

@@ -872,7 +872,7 @@ type Stats struct {
 	FailureStoreFailed int64
 
 	// FailureStoreNoEnabled represents the number of indexing operations that could have been
-	// indexed to failure store if it was enabled.
+	// processed by failure store if it was enabled.
 	FailureStoreNotEnabled int64
 }
 

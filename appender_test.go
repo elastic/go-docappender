@@ -84,7 +84,6 @@ func TestAppender(t *testing.T) {
 					item.FailureStore = string(docappender.FailureStoreStatusFailed)
 				case 5:
 					item.FailureStore = string(docappender.FailureStoreStatusNotEnabled)
-
 				}
 				result.Items[i][action] = item
 			}
