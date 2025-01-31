@@ -43,4 +43,5 @@ require (
 	howett.net/plist v1.0.0 // indirect
 )
 
+// TODO remove override when https://github.com/elastic/go-elasticsearch/pull/948 is merged.
 replace github.com/elastic/go-elasticsearch/v8 v8.17.0 => github.com/1pkg/go-elasticsearch/v8 v8.0.0-20250131000307-5fee144a41e3

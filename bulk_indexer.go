@@ -133,7 +133,7 @@ type BulkIndexerResponseItem struct {
 type FailureStoreStatus string
 
 const (
-	// FailureStoreStatusUknown implicit status which represents that there is no information about
+	// FailureStoreStatusUnknown implicit status which represents that there is no information about
 	// this response or that the failure store is not applicable.
 	FailureStoreStatusUnknown FailureStoreStatus = "not_applicable_or_unknown"
 	// FailureStoreStatusUsed status which represents that this document was stored in the failure store successfully.
