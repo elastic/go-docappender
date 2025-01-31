@@ -67,7 +67,7 @@ func TestAppender(t *testing.T) {
 		// "too many requests". These will be recorded as failures in indexing
 		// stats.
 		for i := range result.Items {
-			if i > 4 {
+			if i > 5 {
 				break
 			}
 			for action, item := range result.Items[i] {
@@ -82,6 +82,9 @@ func TestAppender(t *testing.T) {
 					item.FailureStore = string(docappender.FailureStoreStatusUsed)
 				case 4:
 					item.FailureStore = string(docappender.FailureStoreStatusFailed)
+				case 5:
+					item.FailureStore = string(docappender.FailureStoreStatusNotEnabled)
+
 				}
 				result.Items[i][action] = item
 			}
@@ -151,6 +154,7 @@ loop:
 		BytesUncompressedTotal: bytesUncompressed,
 		FailureStoreUsed:       1,
 		FailureStoreFailed:     1,
+		FailureStoreNotEnabled: 1,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -188,6 +192,8 @@ loop:
 					assert.Equal(t, stats.FailureStoreUsed, dp.Value)
 				case docappender.FailureStoreStatusFailed:
 					assert.Equal(t, stats.FailureStoreFailed, dp.Value)
+				case docappender.FailureStoreStatusNotEnabled:
+					assert.Equal(t, stats.FailureStoreNotEnabled, dp.Value)
 				}
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
@@ -222,7 +228,7 @@ loop:
 
 	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, int64(7), asserted.Load())
-	assert.Equal(t, 6, processedAsserted)
+	assert.Equal(t, 7, processedAsserted)
 }
 
 func TestAppenderRetry(t *testing.T) {

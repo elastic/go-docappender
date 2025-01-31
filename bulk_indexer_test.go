@@ -210,13 +210,15 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 		var i int
 		for _, itemsMap := range result.Items {
 			for k, item := range itemsMap {
-				switch i % 3 {
+				switch i % 4 {
 				case 0:
 					item.FailureStore = string(docappender.FailureStoreStatusUsed)
 				case 1:
 					item.FailureStore = string(docappender.FailureStoreStatusFailed)
 				case 2:
 					item.FailureStore = string(docappender.FailureStoreStatusUnknown)
+				case 3:
+					item.FailureStore = string(docappender.FailureStoreStatusNotEnabled)
 				}
 				itemsMap[k] = item
 				i++
@@ -230,7 +232,7 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	for range 3 {
+	for range 4 {
 		err = indexer.Add(docappender.BulkIndexerItem{
 			Index: "testidx",
 			Body: newJSONReader(map[string]any{
@@ -242,7 +244,8 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 
 	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, int64(3), stat.Indexed)
-	require.Equal(t, int64(1), stat.FailureStoreUsed)
-	require.Equal(t, int64(1), stat.FailureStoreFailed)
+	require.Equal(t, int64(4), stat.Indexed)
+	require.Equal(t, int64(1), stat.FailureStore.Used)
+	require.Equal(t, int64(1), stat.FailureStore.Failed)
+	require.Equal(t, int64(1), stat.FailureStore.NotEnabled)
 }
