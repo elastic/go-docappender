@@ -79,9 +79,9 @@ func TestAppender(t *testing.T) {
 				case 2:
 					item.Status = http.StatusUnauthorized
 				case 3:
-					item.FailureStore = "used"
+					item.FailureStore = string(docappender.FailureStoreStatusUsed)
 				case 4:
-					item.FailureStore = "failed"
+					item.FailureStore = string(docappender.FailureStoreStatusFailed)
 				}
 				result.Items[i][action] = item
 			}

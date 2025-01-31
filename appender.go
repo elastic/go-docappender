@@ -491,7 +491,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
-				attribute.String("failure_store", "used"),
+				attribute.String("failure_store", string(FailureStoreStatusUsed)),
 			),
 		)
 	}
@@ -500,7 +500,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
-				attribute.String("failure_store", "failed"),
+				attribute.String("failure_store", string(FailureStoreStatusFailed)),
 			),
 		)
 	}

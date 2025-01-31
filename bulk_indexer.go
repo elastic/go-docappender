@@ -129,6 +129,22 @@ type BulkIndexerResponseItem struct {
 	} `json:"error,omitempty"`
 }
 
+// FailureStoreStatus defines enumeration type for all known failure store statuses.
+type FailureStoreStatus string
+
+const (
+	// FailureStoreStatusUknown implicit status which represents that there is no information about
+	// this response or that the failure store is not applicable.
+	FailureStoreStatusUnknown FailureStoreStatus = "not_applicable_or_unknown"
+	// FailureStoreStatusUsed status which represents that this document was stored in the failure store successfully.
+	FailureStoreStatusUsed FailureStoreStatus = "used"
+	// FailureStoreStatusFailed status which represents that this document was rejected from the failure store.
+	FailureStoreStatusFailed FailureStoreStatus = "failed"
+	// FailureStoreStatusNotEnabled status which represents that this document was rejected, but
+	// it could have ended up in the failure store if it was enabled.
+	FailureStoreStatusNotEnabled FailureStoreStatus = "not_enabled"
+)
+
 func init() {
 	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
@@ -145,16 +161,12 @@ func init() {
 							case "status":
 								item.Status = i.ReadInt()
 							case "failure_store":
-								// For the stats the only actionable failure store statuses:
-								// "used" which represents that this document was stored in the failure store successfully.
-								// "failed" which represents that this document was rejected from the failure store.
-								// Ignored non actionable statuses:
-								// "not_applicable_or_unknown" implicit status which represents that there is no information about this response or that the failure store is not applicable.
-								// "not_enabled" which represents that this document was rejected, but it could have ended up in the failure store if it was enabled.
-								switch fs := i.ReadString(); fs {
-								case "used":
+								// For the stats the only actionable failure store statuses are "used" and "failed".
+								// All other statuses are non actionable and therefore ignored.
+								switch fs := i.ReadString(); FailureStoreStatus(fs) {
+								case FailureStoreStatusUsed:
 									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreUsed++
-								case "failed":
+								case FailureStoreStatusFailed:
 									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreFailed++
 								}
 							case "error":

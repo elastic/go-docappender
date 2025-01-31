@@ -212,11 +212,11 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 			for k, item := range itemsMap {
 				switch i % 3 {
 				case 0:
-					item.FailureStore = "used"
+					item.FailureStore = string(docappender.FailureStoreStatusUsed)
 				case 1:
-					item.FailureStore = "failed"
+					item.FailureStore = string(docappender.FailureStoreStatusFailed)
 				case 2:
-					item.FailureStore = "unknown"
+					item.FailureStore = string(docappender.FailureStoreStatusUnknown)
 				}
 				itemsMap[k] = item
 				i++
