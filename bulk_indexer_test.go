@@ -203,3 +203,46 @@ func TestPipeline(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
+
+func TestBulkIndexer_FailureStore(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		var i int
+		for _, itemsMap := range result.Items {
+			for k, item := range itemsMap {
+				switch i % 3 {
+				case 0:
+					item.FailureStore = "used"
+				case 1:
+					item.FailureStore = "failed"
+				case 2:
+					item.FailureStore = "unknown"
+				}
+				itemsMap[k] = item
+				i++
+			}
+		}
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	for range 3 {
+		err = indexer.Add(docappender.BulkIndexerItem{
+			Index: "testidx",
+			Body: newJSONReader(map[string]any{
+				"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+			}),
+		})
+		require.NoError(t, err)
+	}
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(3), stat.Indexed)
+	require.Equal(t, int64(1), stat.FailureStoreUsed)
+	require.Equal(t, int64(1), stat.FailureStoreFailed)
+}

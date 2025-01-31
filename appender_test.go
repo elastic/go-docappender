@@ -67,18 +67,22 @@ func TestAppender(t *testing.T) {
 		// "too many requests". These will be recorded as failures in indexing
 		// stats.
 		for i := range result.Items {
-			if i > 2 {
+			if i > 4 {
 				break
 			}
-			status := http.StatusInternalServerError
-			switch i {
-			case 1:
-				status = http.StatusTooManyRequests
-			case 2:
-				status = http.StatusUnauthorized
-			}
 			for action, item := range result.Items[i] {
-				item.Status = status
+				switch i {
+				case 0:
+					item.Status = http.StatusInternalServerError
+				case 1:
+					item.Status = http.StatusTooManyRequests
+				case 2:
+					item.Status = http.StatusUnauthorized
+				case 3:
+					item.FailureStore = "used"
+				case 4:
+					item.FailureStore = "failed"
+				}
 				result.Items[i][action] = item
 			}
 		}
@@ -145,6 +149,8 @@ loop:
 		AvailableBulkRequests:  10,
 		BytesTotal:             bytesTotal,
 		BytesUncompressedTotal: bytesUncompressed,
+		FailureStoreUsed:       1,
+		FailureStoreFailed:     1,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -171,6 +177,9 @@ loop:
 				processedAsserted++
 				assert.Equal(t, stats.FailedServer, dp.Value)
 			case "TooMany":
+				processedAsserted++
+				assert.Equal(t, stats.TooManyRequests, dp.Value)
+			case "FailureStore":
 				processedAsserted++
 				assert.Equal(t, stats.TooManyRequests, dp.Value)
 			default:
@@ -206,7 +215,7 @@ loop:
 
 	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, int64(7), asserted.Load())
-	assert.Equal(t, 4, processedAsserted)
+	assert.Equal(t, 6, processedAsserted)
 }
 
 func TestAppenderRetry(t *testing.T) {

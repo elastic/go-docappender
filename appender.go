@@ -489,13 +489,19 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if resp.FailureStoreUsed > 0 {
 		a.addCount(resp.FailureStoreUsed, &a.docsFailureStoreUsed,
 			a.metrics.docsIndexed,
-			metric.WithAttributes(attribute.String("failure_store", "used")),
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", "used"),
+			),
 		)
 	}
 	if resp.FailureStoreFailed > 0 {
 		a.addCount(resp.FailureStoreFailed, &a.docsFailureStoreFailed,
 			a.metrics.docsIndexed,
-			metric.WithAttributes(attribute.String("failure_store", "failed")),
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", "failed"),
+			),
 		)
 	}
 	logger.Debug(
