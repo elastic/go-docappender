@@ -58,7 +58,6 @@ const (
 	ActionUpdate = "update"
 )
 
-
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
 	// Client holds the Elasticsearch client.
