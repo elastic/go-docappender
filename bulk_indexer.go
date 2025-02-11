@@ -304,7 +304,10 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 }
 
 func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dynamicTemplates map[string]string) {
-	b.jsonw.RawString(`{"` + action + `":{`)
+	b.jsonw.RawString(`{"`)
+	b.jsonw.RawString(action)
+	b.jsonw.RawString(`":{`)
+
 	first := true
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
