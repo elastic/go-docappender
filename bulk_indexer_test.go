@@ -203,3 +203,55 @@ func TestPipeline(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
+
+func TestAction(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+
+		actions := []string{}
+		for _, itemsMap := range result.Items {
+			for a := range itemsMap {
+				actions = append(actions, a)
+			}
+		}
+
+		require.Equal(t, []string{"create", "update", "delete"}, actions)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "testidx",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index:  "testidx",
+		Action: "update",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index:    "testidx",
+		Action:   "delete",
+		Pipeline: "test-pipeline2",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	require.NoError(t, err)
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(3), stat.Indexed)
+}
