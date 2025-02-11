@@ -49,6 +49,17 @@ import (
 // of concurrent bulk requests. This way we can ensure bulk requests have the
 // maximum possible size, based on configuration and throughput.
 
+const (
+	// Actions are all the actions that can be used when indexing data.
+	// `create` will be used by default.
+	ActionCreate = "create"
+	ActionDelete = "delete"
+	ActionIndex  = "index"
+	ActionUpdate = "update"
+)
+
+var allActions = []string{ActionCreate, ActionDelete, ActionIndex, ActionUpdate}
+
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
 	// Client holds the Elasticsearch client.
@@ -289,7 +300,11 @@ type BulkIndexerItem struct {
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	action := item.Action
 	if action == "" {
-		action = "create"
+		action = ActionCreate
+	}
+
+	if !slices.Contains(allActions, action) {
+		return fmt.Errorf("%s is not a valid action", action)
 	}
 
 	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, action, item.DynamicTemplates)

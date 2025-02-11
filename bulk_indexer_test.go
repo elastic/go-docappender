@@ -29,6 +29,7 @@ import (
 
 	"github.com/elastic/go-docappender/v2"
 	"github.com/elastic/go-docappender/v2/docappendertest"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -250,6 +251,16 @@ func TestAction(t *testing.T) {
 		}),
 	})
 	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index:    "testidx",
+		Action:   "foobar",
+		Pipeline: "test-pipeline2",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+	assert.Error(t, err)
 
 	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
