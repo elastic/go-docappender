@@ -302,7 +302,9 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		action = ActionCreate
 	}
 
-	if !slices.Contains(allActions, action) {
+	switch action {
+	case ActionCreate, ActionDelete, ActionIndex, ActionUpdate:
+	default:
 		return fmt.Errorf("%s is not a valid action", action)
 	}
 
