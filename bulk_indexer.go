@@ -58,7 +58,6 @@ const (
 	ActionUpdate = "update"
 )
 
-var allActions = []string{ActionCreate, ActionDelete, ActionIndex, ActionUpdate}
 
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
