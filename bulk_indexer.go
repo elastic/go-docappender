@@ -49,6 +49,15 @@ import (
 // of concurrent bulk requests. This way we can ensure bulk requests have the
 // maximum possible size, based on configuration and throughput.
 
+const (
+	// Actions are all the actions that can be used when indexing data.
+	// `create` will be used by default.
+	ActionCreate = "create"
+	ActionDelete = "delete"
+	ActionIndex  = "index"
+	ActionUpdate = "update"
+)
+
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
 	// Client holds the Elasticsearch client.
@@ -316,13 +325,25 @@ type BulkIndexerItem struct {
 	Index            string
 	DocumentID       string
 	Pipeline         string
+	Action           string
 	Body             io.WriterTo
 	DynamicTemplates map[string]string
 }
 
 // Add encodes an item in the buffer.
 func (b *BulkIndexer) Add(item BulkIndexerItem) error {
-	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, item.DynamicTemplates)
+	action := item.Action
+	if action == "" {
+		action = ActionCreate
+	}
+
+	switch action {
+	case ActionCreate, ActionDelete, ActionIndex, ActionUpdate:
+	default:
+		return fmt.Errorf("%s is not a valid action", action)
+	}
+
+	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, action, item.DynamicTemplates)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -333,8 +354,11 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	return nil
 }
 
-func (b *BulkIndexer) writeMeta(index, documentID, pipeline string, dynamicTemplates map[string]string) {
-	b.jsonw.RawString(`{"create":{`)
+func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dynamicTemplates map[string]string) {
+	b.jsonw.RawString(`{"`)
+	b.jsonw.RawString(action)
+	b.jsonw.RawString(`":{`)
+
 	first := true
 	if documentID != "" {
 		b.jsonw.RawString(`"_id":`)
