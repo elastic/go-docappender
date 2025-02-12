@@ -5,14 +5,14 @@ go 1.22.0
 require (
 	github.com/elastic/go-docappender/v2 v2.0.0
 	github.com/elastic/go-elasticsearch/v7 v7.17.10
-	github.com/elastic/go-elasticsearch/v8 v8.17.0
+	github.com/elastic/go-elasticsearch/v8 v8.17.1
 	github.com/stretchr/testify v1.10.0
 )
 
 require (
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.6.0 // indirect
+	github.com/elastic/elastic-transport-go/v8 v8.6.1 // indirect
 	github.com/elastic/go-sysinfo v1.7.1 // indirect
 	github.com/elastic/go-windows v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
@@ -26,10 +26,10 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.2 // indirect
-	go.elastic.co/apm/module/apmhttp/v2 v2.6.2 // indirect
-	go.elastic.co/apm/module/apmzap/v2 v2.6.2 // indirect
-	go.elastic.co/apm/v2 v2.6.2 // indirect
+	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.3 // indirect
+	go.elastic.co/apm/module/apmhttp/v2 v2.6.3 // indirect
+	go.elastic.co/apm/module/apmzap/v2 v2.6.3 // indirect
+	go.elastic.co/apm/v2 v2.6.3 // indirect
 	go.elastic.co/fastjson v1.4.0 // indirect
 	go.opentelemetry.io/otel v1.32.0 // indirect
 	go.opentelemetry.io/otel/metric v1.32.0 // indirect
@@ -38,7 +38,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.32.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/sync v0.10.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.27.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.0 // indirect
