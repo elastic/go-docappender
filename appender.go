@@ -63,23 +63,20 @@ var (
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
 	// legacy metrics for Stats()
-	bulkRequests               int64
-	docsAdded                  int64
-	docsActive                 int64
-	docsFailed                 int64
-	docsFailedClient           int64
-	docsFailedServer           int64
-	docsIndexed                int64
-	docsFailureStoreUsed       int64
-	docsFailureStoreFailed     int64
-	docsFailureStoreNotEnabled int64
-	tooManyRequests            int64
-	bytesTotal                 int64
-	bytesUncompressedTotal     int64
-	availableBulkRequests      int64
-	activeCreated              int64
-	activeDestroyed            int64
-	blockedAdd                 int64
+	bulkRequests           int64
+	docsAdded              int64
+	docsActive             int64
+	docsFailed             int64
+	docsFailedClient       int64
+	docsFailedServer       int64
+	docsIndexed            int64
+	tooManyRequests        int64
+	bytesTotal             int64
+	bytesUncompressedTotal int64
+	availableBulkRequests  int64
+	activeCreated          int64
+	activeDestroyed        int64
+	blockedAdd             int64
 
 	scalingInfo atomic.Value
 
@@ -258,9 +255,6 @@ func (a *Appender) Stats() Stats {
 		IndexersActive:         a.scalingInformation().activeIndexers,
 		IndexersCreated:        atomic.LoadInt64(&a.activeCreated),
 		IndexersDestroyed:      atomic.LoadInt64(&a.activeDestroyed),
-		FailureStoreUsed:       atomic.LoadInt64(&a.docsFailureStoreUsed),
-		FailureStoreFailed:     atomic.LoadInt64(&a.docsFailureStoreFailed),
-		FailureStoreNotEnabled: atomic.LoadInt64(&a.docsFailureStoreNotEnabled),
 	}
 }
 
@@ -490,7 +484,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		)
 	}
 	if failureStore.Used > 0 {
-		a.addCount(failureStore.Used, &a.docsFailureStoreUsed,
+		a.addCount(failureStore.Used, nil,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
@@ -499,7 +493,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		)
 	}
 	if failureStore.Failed > 0 {
-		a.addCount(failureStore.Failed, &a.docsFailureStoreFailed,
+		a.addCount(failureStore.Failed, nil,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
@@ -508,7 +502,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		)
 	}
 	if failureStore.NotEnabled > 0 {
-		a.addCount(failureStore.NotEnabled, &a.docsFailureStoreNotEnabled,
+		a.addCount(failureStore.NotEnabled, nil,
 			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
@@ -862,18 +856,6 @@ type Stats struct {
 
 	// IndexersDestroyed represents the number of times an active indexer was destroyed.
 	IndexersDestroyed int64
-
-	// FailureStoreUsed represents the number of indexing operations that have resolved
-	// in indexing to failure store.
-	FailureStoreUsed int64
-
-	// FailureStoreFailed represents the number of indexing operations that have failed
-	// while indexing to failure store.
-	FailureStoreFailed int64
-
-	// FailureStoreNoEnabled represents the number of indexing operations that could have been
-	// processed by failure store if it was enabled.
-	FailureStoreNotEnabled int64
 }
 
 func timeFunc(f func()) time.Duration {

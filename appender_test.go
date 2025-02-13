@@ -151,9 +151,6 @@ loop:
 		AvailableBulkRequests:  10,
 		BytesTotal:             bytesTotal,
 		BytesUncompressedTotal: bytesUncompressed,
-		FailureStoreUsed:       1,
-		FailureStoreFailed:     1,
-		FailureStoreNotEnabled: 1,
 	}, stats)
 
 	var rm metricdata.ResourceMetrics
@@ -166,7 +163,7 @@ loop:
 		asserted.Add(1)
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
-			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
+			metricdatatest.AssertHasAttributes(t, dp, attrs.ToSlice()...)
 			status, exist := dp.Attributes.Value(attribute.Key("status"))
 			assert.True(t, exist)
 			switch status.AsString() {
@@ -186,14 +183,15 @@ loop:
 				processedAsserted++
 				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
 				assert.True(t, exist)
-				switch docappender.FailureStoreStatus(fs.AsString()) {
-				case docappender.FailureStoreStatusUsed:
-					assert.Equal(t, stats.FailureStoreUsed, dp.Value)
-				case docappender.FailureStoreStatusFailed:
-					assert.Equal(t, stats.FailureStoreFailed, dp.Value)
-				case docappender.FailureStoreStatusNotEnabled:
-					assert.Equal(t, stats.FailureStoreNotEnabled, dp.Value)
-				}
+				assert.Contains(
+					t,
+					[]docappender.FailureStoreStatus{
+						docappender.FailureStoreStatusUsed,
+						docappender.FailureStoreStatusFailed,
+						docappender.FailureStoreStatusNotEnabled,
+					},
+					docappender.FailureStoreStatus(fs.AsString()),
+				)
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
 			}
