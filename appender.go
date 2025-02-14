@@ -409,13 +409,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		return err
 	}
-	var (
-		docsFailed, docsIndexed,
+	var docsFailed, docsIndexed,
 		// breakdown of failed docs:
 		tooManyRequests, // failed after document retries (if it applies) and final status is 429
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
-	)
+
+	failureStore := resp.FailureStore
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -483,11 +483,41 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
 		)
 	}
+	if failureStore.Used > 0 {
+		a.addCount(failureStore.Used, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusUsed)),
+			),
+		)
+	}
+	if failureStore.Failed > 0 {
+		a.addCount(failureStore.Failed, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusFailed)),
+			),
+		)
+	}
+	if failureStore.NotEnabled > 0 {
+		a.addCount(failureStore.NotEnabled, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
+			),
+		)
+	}
 	logger.Debug(
 		"bulk request completed",
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
+		zap.Int64("docs_failure_store_used", failureStore.Used),
+		zap.Int64("docs_failure_store_failed", failureStore.Failed),
+		zap.Int64("docs_failure_store_not_enabled", failureStore.NotEnabled),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")
