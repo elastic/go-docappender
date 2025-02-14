@@ -504,11 +504,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 		}
 
-		tmp := resp.FailedDocs[:0]
-		lastln := 0
-		lastIdx := 0
 		var gr *gzip.Reader
-
 		if b.gzipw != nil {
 			gr, err = gzip.NewReader(bytes.NewReader(b.copyBuf))
 			if err != nil {
@@ -517,6 +513,8 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			defer gr.Close()
 		}
 
+		lastln := 0
+		lastIdx := 0
 		// keep track of the previous newlines
 		// the buffer is being read lazily
 		seen := 0
@@ -598,14 +596,15 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			return nil
 		}
 
-		for _, res := range resp.FailedDocs {
-			if b.shouldRetryOnStatus(res.Status) {
+		nonRetriableDocs := resp.FailedDocs[:0]
+		for _, item := range resp.FailedDocs {
+			if b.shouldRetryOnStatus(item.Status) {
 				// Increment retry count for the positions found.
-				count := b.retryCounts[res.Position] + 1
+				count := b.retryCounts[item.Position] + 1
 				// check if we are above the maxDocumentRetry setting
 				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
-					tmp = append(tmp, res)
+					nonRetriableDocs = append(nonRetriableDocs, item)
 					continue
 				}
 				if resp.GreatestRetry < count {
@@ -616,22 +615,21 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// to be updated to match the next current buffer position.
 				b.retryCounts[b.itemsAdded] = count
 
-				err := writeItemAtPos(b.writer, res.Position)
-				if err != nil {
+				if err := writeItemAtPos(b.writer, item.Position); err != nil {
 					return resp, err
 				}
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
 				// If it's not a retriable error, treat the document as failed
-				tmp = append(tmp, res)
+				nonRetriableDocs = append(nonRetriableDocs, item)
 			}
 		}
 
 		// FailedDocs contain responses of
 		// - non-retriable errors
 		// - retriable errors that reached the retry limit
-		resp.FailedDocs = tmp
+		resp.FailedDocs = nonRetriableDocs
 	}
 
 	return resp, nil
