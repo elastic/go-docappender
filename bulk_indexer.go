@@ -91,6 +91,11 @@ type BulkIndexerConfig struct {
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
+
+	// PopulateFailedItemSource controls whether each BulkIndexerResponseItem.Source
+	// in BulkIndexerResponseStat.FailedDocs is populated with the source of the item,
+	// which includes the action line and the document line.
+	PopulateFailedItemSource bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -132,6 +137,8 @@ type BulkIndexerResponseItem struct {
 		Type   string `json:"type"`
 		Reason string `json:"reason"`
 	} `json:"error,omitempty"`
+
+	Source string `json:"source"`
 }
 
 func init() {
@@ -596,7 +603,19 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			return nil
 		}
 
-		nonRetriableDocs := resp.FailedDocs[:0]
+		// sourceBuf is only used for populating failed item source
+		var sourceBuf bytes.Buffer
+
+		nonRetriable := resp.FailedDocs[:0]
+		appendNonRetriable := func(item BulkIndexerResponseItem) {
+			if b.config.PopulateFailedItemSource {
+				sourceBuf.Reset()
+				_ = writeItemAtPos(&sourceBuf, item.Position)
+				item.Source = sourceBuf.String()
+			}
+			nonRetriable = append(nonRetriable, item)
+		}
+
 		for _, item := range resp.FailedDocs {
 			if b.shouldRetryOnStatus(item.Status) {
 				// Increment retry count for the positions found.
@@ -604,7 +623,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// check if we are above the maxDocumentRetry setting
 				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
-					nonRetriableDocs = append(nonRetriableDocs, item)
+					appendNonRetriable(item)
 					continue
 				}
 				if resp.GreatestRetry < count {
@@ -622,14 +641,14 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.itemsAdded++
 			} else {
 				// If it's not a retriable error, treat the document as failed
-				nonRetriableDocs = append(nonRetriableDocs, item)
+				appendNonRetriable(item)
 			}
 		}
 
 		// FailedDocs contain responses of
 		// - non-retriable errors
 		// - retriable errors that reached the retry limit
-		resp.FailedDocs = nonRetriableDocs
+		resp.FailedDocs = nonRetriable
 	}
 
 	return resp, nil
