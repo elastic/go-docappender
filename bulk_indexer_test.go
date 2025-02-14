@@ -20,6 +20,7 @@ package docappender_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,10 +30,11 @@ import (
 
 	"github.com/klauspost/compress/gzip"
 
-	"github.com/elastic/go-docappender/v2"
-	"github.com/elastic/go-docappender/v2/docappendertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-docappender/v2/docappendertest"
 )
 
 func TestBulkIndexer(t *testing.T) {
@@ -294,4 +296,78 @@ func TestItemRequireDataStream(t *testing.T) {
 	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
+}
+
+func TestPopulateFailedItemSource(t *testing.T) {
+	for _, compressionLevel := range []int{0, 1} {
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, result := docappendertest.DecodeBulkRequest(r)
+			for _, itemsMap := range result.Items {
+				for k, item := range itemsMap {
+					if item.Index == "ok" {
+						continue
+					}
+					result.HasErrors = true
+					item.Status = http.StatusBadRequest
+					item.Error.Type = "validation_error"
+					item.Error.Reason = "for testing"
+					itemsMap[k] = item
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+		})
+		t.Run(fmt.Sprintf("compression_level=%d", compressionLevel), func(t *testing.T) {
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:                   client,
+				PopulateFailedItemSource: true,
+			})
+			require.NoError(t, err)
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "foo",
+				Body:  strings.NewReader(`{"1":"2"}`),
+			})
+			require.NoError(t, err)
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "ok",
+				Body:  strings.NewReader(`{"3":"4"}`),
+			})
+			require.NoError(t, err)
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "bar",
+				Body:  strings.NewReader(`{"5":"6"}`),
+			})
+			require.NoError(t, err)
+
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Len(t, stat.FailedDocs, 2)
+			assert.Equal(t, []docappender.BulkIndexerResponseItem{
+				{
+					Index:    "foo",
+					Status:   http.StatusBadRequest,
+					Position: 0,
+					Error: struct {
+						Type   string `json:"type"`
+						Reason string `json:"reason"`
+					}{Type: "validation_error", Reason: "for testing"},
+					Source: `{"create":{"_index":"foo"}}
+{"1":"2"}
+`,
+				},
+				{
+					Index:    "bar",
+					Status:   http.StatusBadRequest,
+					Position: 2,
+					Error: struct {
+						Type   string `json:"type"`
+						Reason string `json:"reason"`
+					}{Type: "validation_error", Reason: "for testing"},
+					Source: `{"create":{"_index":"bar"}}
+{"5":"6"}
+`,
+				},
+			}, stat.FailedDocs)
+		})
+	}
 }
