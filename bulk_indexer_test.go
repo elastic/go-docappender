@@ -319,7 +319,7 @@ func TestPopulateFailedItemSource(t *testing.T) {
 		t.Run(fmt.Sprintf("compression_level=%d", compressionLevel), func(t *testing.T) {
 			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 				Client:                   client,
-				PopulateFailedItemSource: true,
+				PopulateFailedDocsSource: true,
 			})
 			require.NoError(t, err)
 

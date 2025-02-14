@@ -92,10 +92,11 @@ type BulkIndexerConfig struct {
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
 
-	// PopulateFailedItemSource controls whether each BulkIndexerResponseItem.Source
+	// PopulateFailedDocsSource controls whether each BulkIndexerResponseItem.Source
 	// in BulkIndexerResponseStat.FailedDocs is populated with the source of the item,
 	// which includes the action line and the document line.
-	PopulateFailedItemSource bool
+	// For testing and debugging only. Use with caution.
+	PopulateFailedDocsSource bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -406,7 +407,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedItemSource {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsSource {
 		n := b.buf.Len()
 		if cap(b.copyBuf) < n {
 			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
@@ -491,7 +492,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
-	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedItemSource {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsSource {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -607,7 +608,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 		nonRetriable := resp.FailedDocs[:0]
 		appendNonRetriable := func(item BulkIndexerResponseItem) {
-			if b.config.PopulateFailedItemSource {
+			if b.config.PopulateFailedDocsSource {
 				sourceBuf.Reset()
 				_ = writeItemAtPos(&sourceBuf, item.Position)
 				item.Source = sourceBuf.String()
