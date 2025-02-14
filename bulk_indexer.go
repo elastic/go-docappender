@@ -286,12 +286,13 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 }
 
 type BulkIndexerItem struct {
-	Index            string
-	DocumentID       string
-	Pipeline         string
-	Action           string
-	Body             io.WriterTo
-	DynamicTemplates map[string]string
+	Index             string
+	DocumentID        string
+	Pipeline          string
+	Action            string
+	Body              io.WriterTo
+	DynamicTemplates  map[string]string
+	RequireDataStream bool
 }
 
 // Add encodes an item in the buffer.
@@ -307,7 +308,14 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		return fmt.Errorf("%s is not a valid action", action)
 	}
 
-	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, action, item.DynamicTemplates)
+	b.writeMeta(
+		item.Index,
+		item.DocumentID,
+		item.Pipeline,
+		action,
+		item.DynamicTemplates,
+		item.RequireDataStream,
+	)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -318,7 +326,11 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	return nil
 }
 
-func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dynamicTemplates map[string]string) {
+func (b *BulkIndexer) writeMeta(
+	index, documentID, pipeline, action string,
+	dynamicTemplates map[string]string,
+	requireDataStream bool,
+) {
 	b.jsonw.RawString(`{"`)
 	b.jsonw.RawString(action)
 	b.jsonw.RawString(`":{`)
@@ -361,6 +373,13 @@ func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dyna
 			firstDynamicTemplate = false
 		}
 		b.jsonw.RawByte('}')
+		first = false
+	}
+	if requireDataStream {
+		if !first {
+			b.jsonw.RawByte(',')
+		}
+		b.jsonw.RawString(`"require_data_stream":true`)
 		first = false
 	}
 	b.jsonw.RawString("}}\n")
