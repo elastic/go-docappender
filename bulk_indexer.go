@@ -406,7 +406,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetries > 0 {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedItemSource {
 		n := b.buf.Len()
 		if cap(b.copyBuf) < n {
 			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
@@ -491,8 +491,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
-	// Only run the retry logic if document retries are enabled
-	if b.config.MaxDocumentRetries > 0 {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedItemSource {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -617,7 +616,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 
 		for _, item := range resp.FailedDocs {
-			if b.shouldRetryOnStatus(item.Status) {
+			if b.config.MaxDocumentRetries > 0 && b.shouldRetryOnStatus(item.Status) {
 				// Increment retry count for the positions found.
 				count := b.retryCounts[item.Position] + 1
 				// check if we are above the maxDocumentRetry setting
