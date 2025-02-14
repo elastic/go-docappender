@@ -29,11 +29,11 @@ import (
 	"strings"
 	"unsafe"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	jsoniter "github.com/json-iterator/go"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -520,19 +520,86 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// keep track of the previous newlines
 		// the buffer is being read lazily
 		seen := 0
+		writeItemAtPos := func(to io.Writer, pos int) error {
+			// there are two lines for each document:
+			// - action
+			// - document
+			//
+			// Find the document by looking up the newline separators.
+			// First the newline (if exists) before the 'action' then the
+			// newline at the end of the 'document' line.
+			startln := pos * 2
+			endln := startln + 2
+
+			if b.gzipw != nil {
+				// First loop, read from the gzip reader
+				if len(buf) == 0 {
+					n, err := gr.Read(buf[:cap(buf)])
+					if err != nil && err != io.EOF {
+						return fmt.Errorf("failed to read from compressed buffer: %w", err)
+					}
+					buf = buf[:n]
+				}
+
+				// newlines in the current buf
+				newlines := bytes.Count(buf, []byte{'\n'})
+
+				// loop until we've seen the start newline
+				for seen+newlines < startln {
+					seen += newlines
+					n, err := gr.Read(buf[:cap(buf)])
+					if err != nil && err != io.EOF {
+						return fmt.Errorf("failed to read from compressed buffer: %w", err)
+					}
+					buf = buf[:n]
+					newlines = bytes.Count(buf, []byte{'\n'})
+				}
+
+				startIdx := indexnth(buf, startln-seen, '\n') + 1
+				endIdx := indexnth(buf, endln-seen, '\n') + 1
+
+				// If the end newline is not in the buffer read more data
+				if endIdx == 0 {
+					// Write what we have
+					to.Write(buf[startIdx:])
+
+					// loop until we've seen the end newline
+					for seen+newlines < endln {
+						seen += newlines
+						n, err := gr.Read(buf[:cap(buf)])
+						if err != nil && err != io.EOF {
+							return fmt.Errorf("failed to read from compressed buffer: %w", err)
+						}
+						buf = buf[:n]
+						newlines = bytes.Count(buf, []byte{'\n'})
+						if seen+newlines < endln {
+							// endln is not here, write what we have and keep going
+							to.Write(buf)
+						}
+					}
+
+					// try again to find the end newline in the extra data
+					// we just read.
+					endIdx = indexnth(buf, endln-seen, '\n') + 1
+					to.Write(buf[:endIdx])
+				} else {
+					// If the end newline is in the buffer write the event
+					to.Write(buf[startIdx:endIdx])
+				}
+			} else {
+				startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
+				endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
+
+				to.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
+
+				lastln = endln
+				lastIdx += endIdx
+			}
+			return nil
+		}
 
 		for _, res := range resp.FailedDocs {
 			if b.shouldRetryOnStatus(res.Status) {
-				// there are two lines for each document:
-				// - action
-				// - document
-				//
-				// Find the document by looking up the newline separators.
-				// First the newline (if exists) before the 'action' then the
-				// newline at the end of the 'document' line.
-				startln := res.Position * 2
-				endln := startln + 2
-
 				// Increment retry count for the positions found.
 				count := b.retryCounts[res.Position] + 1
 				// check if we are above the maxDocumentRetry setting
@@ -549,71 +616,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// to be updated to match the next current buffer position.
 				b.retryCounts[b.itemsAdded] = count
 
-				if b.gzipw != nil {
-					// First loop, read from the gzip reader
-					if len(buf) == 0 {
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-					}
-
-					// newlines in the current buf
-					newlines := bytes.Count(buf, []byte{'\n'})
-
-					// loop until we've seen the start newline
-					for seen+newlines < startln {
-						seen += newlines
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-						newlines = bytes.Count(buf, []byte{'\n'})
-					}
-
-					startIdx := indexnth(buf, startln-seen, '\n') + 1
-					endIdx := indexnth(buf, endln-seen, '\n') + 1
-
-					// If the end newline is not in the buffer read more data
-					if endIdx == 0 {
-						// Write what we have
-						b.writer.Write(buf[startIdx:])
-
-						// loop until we've seen the end newline
-						for seen+newlines < endln {
-							seen += newlines
-							n, err := gr.Read(buf[:cap(buf)])
-							if err != nil && err != io.EOF {
-								return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-							}
-							buf = buf[:n]
-							newlines = bytes.Count(buf, []byte{'\n'})
-							if seen+newlines < endln {
-								// endln is not here, write what we have and keep going
-								b.writer.Write(buf)
-							}
-						}
-
-						// try again to find the end newline in the extra data
-						// we just read.
-						endIdx = indexnth(buf, endln-seen, '\n') + 1
-						b.writer.Write(buf[:endIdx])
-					} else {
-						// If the end newline is in the buffer write the event
-						b.writer.Write(buf[startIdx:endIdx])
-					}
-				} else {
-					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
-					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
-
-					b.writer.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
-
-					lastln = endln
-					lastIdx += endIdx
+				err := writeItemAtPos(b.writer, res.Position)
+				if err != nil {
+					return resp, err
 				}
-
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
