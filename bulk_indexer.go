@@ -607,13 +607,17 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		var sourceBuf bytes.Buffer
 
 		nonRetriable := resp.FailedDocs[:0]
-		appendNonRetriable := func(item BulkIndexerResponseItem) {
+		appendNonRetriable := func(item BulkIndexerResponseItem) (err error) {
 			if b.config.PopulateFailedDocsSource {
 				sourceBuf.Reset()
-				_ = writeItemAtPos(&sourceBuf, item.Position)
+				// In an ideal world, PopulateFailedDocsSource failures should not cause a flush failure.
+				// But since this is only for debugging / testing, and any writeItemAtPos would reveal a bug in the code,
+				// fail fast and explicitly.
+				err = writeItemAtPos(&sourceBuf, item.Position)
 				item.Source = sourceBuf.String()
 			}
 			nonRetriable = append(nonRetriable, item)
+			return
 		}
 
 		for _, item := range resp.FailedDocs {
@@ -623,7 +627,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// check if we are above the maxDocumentRetry setting
 				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
-					appendNonRetriable(item)
+					if err := appendNonRetriable(item); err != nil {
+						return resp, err
+					}
 					continue
 				}
 				if resp.GreatestRetry < count {
@@ -641,7 +647,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				b.itemsAdded++
 			} else {
 				// If it's not a retriable error, treat the document as failed
-				appendNonRetriable(item)
+				if err := appendNonRetriable(item); err != nil {
+					return resp, err
+				}
 			}
 		}
 
