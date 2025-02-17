@@ -95,7 +95,8 @@ type BulkIndexerConfig struct {
 	// PopulateFailedDocsSource controls whether each BulkIndexerResponseItem.Source
 	// in BulkIndexerResponseStat.FailedDocs is populated with the source of the item,
 	// which includes the action line and the document line.
-	// For testing and debugging only. Use with caution.
+	// For testing and debugging only. Use with caution as it may expose sensitive data.
+	// Any clients should relay this warning to users.
 	PopulateFailedDocsSource bool
 }
 
