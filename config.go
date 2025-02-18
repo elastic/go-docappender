@@ -68,6 +68,8 @@ type Config struct {
 	// If MaxRequests is less than or equal to zero, the default of 10 will be used.
 	MaxRequests int
 
+	BulkIndexerPool *BulkIndexerPool
+
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
 
@@ -128,6 +130,53 @@ type Config struct {
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
 	MetricAttributes attribute.Set
+}
+
+// DefaultConfig returns a copy of cfg with any zero values set to their
+// default values.
+func DefaultConfig(cfg Config) Config {
+	if cfg.MaxRequests <= 0 {
+		cfg.MaxRequests = 10
+	}
+	if cfg.FlushBytes <= 0 {
+		cfg.FlushBytes = 1 * 1024 * 1024
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 30 * time.Second
+	}
+	if cfg.DocumentBufferSize <= 0 {
+		cfg.DocumentBufferSize = 1024
+	}
+	if !cfg.Scaling.Disabled {
+		if cfg.Scaling.ScaleDown.Threshold == 0 {
+			cfg.Scaling.ScaleDown.Threshold = 30
+		}
+		if cfg.Scaling.ScaleDown.CoolDown <= 0 {
+			cfg.Scaling.ScaleDown.CoolDown = 30 * time.Second
+		}
+		if cfg.Scaling.ScaleUp.Threshold == 0 {
+			cfg.Scaling.ScaleUp.Threshold = 60
+		}
+		if cfg.Scaling.ScaleUp.CoolDown <= 0 {
+			cfg.Scaling.ScaleUp.CoolDown = time.Minute
+		}
+		if cfg.Scaling.IdleInterval <= 0 {
+			cfg.Scaling.IdleInterval = 30 * time.Second
+		}
+		if cfg.Scaling.ActiveRatio <= 0 {
+			cfg.Scaling.ActiveRatio = 0.25
+		}
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
+	if cfg.BulkIndexerPool == nil {
+		cfg.BulkIndexerPool = NewBulkIndexerPool(
+			cfg.MaxRequests, cfg.MaxRequests,
+			BulkIndexerConfigFrom(cfg),
+		)
+	}
+	return cfg
 }
 
 // ScalingConfig holds the docappender autoscaling configuration.
@@ -191,4 +240,14 @@ type ScaleActionConfig struct {
 	// CoolDown is the amount of time needed to elapse between scaling actions
 	// to trigger it.
 	CoolDown time.Duration
+}
+
+func BulkIndexerConfigFrom(cfg Config) BulkIndexerConfig {
+	return BulkIndexerConfig{
+		MaxDocumentRetries:    cfg.MaxDocumentRetries,
+		RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
+		CompressionLevel:      cfg.CompressionLevel,
+		Pipeline:              cfg.Pipeline,
+		RequireDataStream:     cfg.RequireDataStream,
+	}
 }

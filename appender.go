@@ -19,6 +19,7 @@ package docappender
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -81,7 +82,9 @@ type Appender struct {
 	scalingInfo atomic.Value
 
 	config                Config
-	available             chan *BulkIndexer
+	client                esapi.Transport
+	pool                  *BulkIndexerPool
+	id                    string
 	bulkItems             chan BulkIndexerItem
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
@@ -98,6 +101,7 @@ type Appender struct {
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 func New(client esapi.Transport, cfg Config) (*Appender, error) {
+	cfg = DefaultConfig(cfg)
 	if client == nil {
 		return nil, errors.New("client is nil")
 	}
@@ -107,38 +111,6 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 			"expected CompressionLevel in range [-1,9], got %d",
 			cfg.CompressionLevel,
 		)
-	}
-	if cfg.MaxRequests <= 0 {
-		cfg.MaxRequests = 10
-	}
-	if cfg.FlushBytes <= 0 {
-		cfg.FlushBytes = 1 * 1024 * 1024
-	}
-	if cfg.FlushInterval <= 0 {
-		cfg.FlushInterval = 30 * time.Second
-	}
-	if cfg.DocumentBufferSize <= 0 {
-		cfg.DocumentBufferSize = 1024
-	}
-	if !cfg.Scaling.Disabled {
-		if cfg.Scaling.ScaleDown.Threshold == 0 {
-			cfg.Scaling.ScaleDown.Threshold = 30
-		}
-		if cfg.Scaling.ScaleDown.CoolDown <= 0 {
-			cfg.Scaling.ScaleDown.CoolDown = 30 * time.Second
-		}
-		if cfg.Scaling.ScaleUp.Threshold == 0 {
-			cfg.Scaling.ScaleUp.Threshold = 60
-		}
-		if cfg.Scaling.ScaleUp.CoolDown <= 0 {
-			cfg.Scaling.ScaleUp.CoolDown = time.Minute
-		}
-		if cfg.Scaling.IdleInterval <= 0 {
-			cfg.Scaling.IdleInterval = 30 * time.Second
-		}
-		if cfg.Scaling.ActiveRatio <= 0 {
-			cfg.Scaling.ActiveRatio = 0.25
-		}
 	}
 
 	minFlushBytes := 16 * 1024 // 16kb
@@ -153,32 +125,22 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	if err != nil {
 		return nil, err
 	}
-	available := make(chan *BulkIndexer, cfg.MaxRequests)
-	for i := 0; i < cfg.MaxRequests; i++ {
-		bi, err := NewBulkIndexer(BulkIndexerConfig{
-			Client:                client,
-			MaxDocumentRetries:    cfg.MaxDocumentRetries,
-			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
-			CompressionLevel:      cfg.CompressionLevel,
-			Pipeline:              cfg.Pipeline,
-			RequireDataStream:     cfg.RequireDataStream,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
-		}
-		available <- bi
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = zap.NewNop()
+	if err := BulkIndexerConfigFrom(cfg).Validate(); err != nil {
+		return nil, fmt.Errorf("error creating bulk indexer: %w", err)
 	}
 	indexer := &Appender{
+		pool:      cfg.BulkIndexerPool,
 		config:    cfg,
-		available: available,
+		client:    client,
+		id:        rand.Text(),
 		closed:    make(chan struct{}),
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
-	indexer.addUpDownCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
+	// NOTE(marclop): This implementation kind of breaks this rule. We need to
+	// find a way to make this work well, or we could issue a new major release
+	// with non-BWC changes.
+	indexer.addUpDownCount(int64(cfg.MaxRequests), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
@@ -225,9 +187,9 @@ func (a *Appender) Close(ctx context.Context) error {
 	if err := a.errgroup.Wait(); err != nil {
 		return err
 	}
-	close(a.available)
+	indexers := a.pool.Deregister(a.id)
 	var errs []error
-	for bi := range a.available {
+	for bi := range indexers {
 		if err := a.flush(context.Background(), bi); err != nil {
 			errs = append(errs, fmt.Errorf("indexer failed: %w", err))
 		}
@@ -358,7 +320,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		flushCtx = ctx
 	}
 
-	resp, err := bulkIndexer.Flush(flushCtx)
+	resp, err := bulkIndexer.Flush(flushCtx, a.client)
 
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
@@ -515,8 +477,10 @@ func (a *Appender) runActiveIndexer() {
 			// NOTE(marclop) Record the TS when the first document is cached.
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
-			active = <-a.available
+			active = a.pool.Get(a.id)
+
 			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+			a.addUpDownCount(1, nil, a.metrics.concurrentBulkrequests)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.Add(item); err != nil {
@@ -578,8 +542,9 @@ func (a *Appender) runActiveIndexer() {
 					err = a.flush(a.errgroupContext, indexer)
 				})
 				indexer.Reset()
-				a.available <- indexer
+				a.pool.Put(a.id, indexer)
 				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+				a.addUpDownCount(-1, nil, a.metrics.concurrentBulkrequests, attrs)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)

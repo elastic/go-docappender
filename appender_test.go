@@ -806,8 +806,7 @@ func TestAppenderIndexFailedLogging(t *testing.T) {
 
 	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
 	indexer, err := docappender.New(client, docappender.Config{
-		FlushBytes: 500,
-		Logger:     zap.New(core),
+		Logger: zap.New(core),
 	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())

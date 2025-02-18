@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,9 +59,6 @@ const (
 
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
-	// Client holds the Elasticsearch client.
-	Client esapi.Transport
-
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
 
@@ -91,6 +87,15 @@ type BulkIndexerConfig struct {
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
+}
+
+func (cfg BulkIndexerConfig) Validate() error {
+	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
+		return fmt.Errorf("expected CompressionLevel in range [-1,9], got %d",
+			cfg.CompressionLevel,
+		)
+	}
+	return nil
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -211,17 +216,13 @@ func (cw *countWriter) Write(p []byte) (int, error) {
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 // The returned BulkIndexer is NOT safe for concurrent use by multiple goroutines.
 func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
-	if cfg.Client == nil {
-		return nil, errors.New("client is nil")
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+	return newBulkIndexer(cfg), nil
+}
 
-	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
-		return nil, fmt.Errorf(
-			"expected CompressionLevel in range [-1,9], got %d",
-			cfg.CompressionLevel,
-		)
-	}
-
+func newBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
 		config:            cfg,
 		retryCounts:       make(map[int]int),
@@ -241,7 +242,7 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		writer = &b.buf
 	}
 	b.writer = &countWriter{0, writer}
-	return b, nil
+	return b
 }
 
 // Reset resets bulk indexer, ready for a new request.
@@ -388,7 +389,7 @@ func (b *BulkIndexer) writeMeta(
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
+func (b *BulkIndexer) Flush(ctx context.Context, client esapi.Transport) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
 		return BulkIndexerResponseStat{}, nil
 	}
@@ -431,7 +432,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	bytesFlushed := b.buf.Len()
 	bytesUncompFlushed := b.writer.bytesWritten
-	res, err := req.Do(ctx, b.config.Client)
+	res, err := req.Do(ctx, client)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
