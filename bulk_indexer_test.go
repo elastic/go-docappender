@@ -337,7 +337,7 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(4), stat.Indexed)
-	require.Equal(t, int64(1), stat.FailureStore.Used)
-	require.Equal(t, int64(1), stat.FailureStore.Failed)
-	require.Equal(t, int64(1), stat.FailureStore.NotEnabled)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.Used)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.Failed)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.NotEnabled)
 }

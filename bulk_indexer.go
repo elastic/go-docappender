@@ -114,8 +114,8 @@ type BulkIndexerResponseStat struct {
 	Indexed int64
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
-	// FailureStore contains failure store specific stats.
-	FailureStore struct {
+	// FailureStoreDocs contains failure store specific document stats.
+	FailureStoreDocs struct {
 		// Used contains the total number of documents indexed to failure store.
 		Used int64
 		// Failed contains the total number of documents which failed when indexed to failure store.
@@ -179,11 +179,11 @@ func init() {
 								// For the stats track only actionable explicit failure store statuses "used", "failed" and "not_enabled".
 								switch fs := i.ReadString(); FailureStoreStatus(fs) {
 								case FailureStoreStatusUsed:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Used++
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Used++
 								case FailureStoreStatusFailed:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.Failed++
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Failed++
 								case FailureStoreStatusNotEnabled:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStore.NotEnabled++
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.NotEnabled++
 								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
