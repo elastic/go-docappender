@@ -143,7 +143,7 @@ type BulkIndexerResponseItem struct {
 		Reason string `json:"reason"`
 	} `json:"error,omitempty"`
 
-	Source string `json:"source"`
+	Source string `json:"-"`
 }
 
 func init() {
