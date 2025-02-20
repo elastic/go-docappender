@@ -92,15 +92,15 @@ type BulkIndexerConfig struct {
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
 
-	// PopulateFailedDocsSource controls whether each BulkIndexerResponseItem.Source
-	// in BulkIndexerResponseStat.FailedDocs is populated with the source of the item,
+	// PopulateFailedDocsInput controls whether each BulkIndexerResponseItem.Input
+	// in BulkIndexerResponseStat.FailedDocs is populated with the input of the item,
 	// which includes the action line and the document line.
 	//
 	// WARNING: this is provided for testing and debugging only.
 	// Use with caution as it may expose sensitive data; any clients
 	// of go-docappender enabling this should relay this warning to
 	// their users. Setting this will also add memory overhead.
-	PopulateFailedDocsSource bool
+	PopulateFailedDocsInput bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -143,7 +143,7 @@ type BulkIndexerResponseItem struct {
 		Reason string `json:"reason"`
 	} `json:"error,omitempty"`
 
-	Source string `json:"-"`
+	Input string `json:"-"`
 }
 
 func init() {
@@ -411,7 +411,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsSource {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
 		n := b.buf.Len()
 		if cap(b.copyBuf) < n {
 			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
@@ -496,7 +496,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
 	}
 
-	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsSource {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -607,18 +607,18 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			return nil
 		}
 
-		// sourceBuf is only used for populating failed item source
-		var sourceBuf bytes.Buffer
+		// inputBuf is only used to populate failed item input
+		var inputBuf bytes.Buffer
 
 		nonRetriable := resp.FailedDocs[:0]
 		appendNonRetriable := func(item BulkIndexerResponseItem) (err error) {
-			if b.config.PopulateFailedDocsSource {
-				sourceBuf.Reset()
-				// In an ideal world, PopulateFailedDocsSource failures should not cause a flush failure.
+			if b.config.PopulateFailedDocsInput {
+				inputBuf.Reset()
+				// In an ideal world, PopulateFailedDocsInput failures should not cause a flush failure.
 				// But since this is only for debugging / testing, and any writeItemAtPos would reveal a bug in the code,
 				// fail fast and explicitly.
-				err = writeItemAtPos(&sourceBuf, item.Position)
-				item.Source = sourceBuf.String()
+				err = writeItemAtPos(&inputBuf, item.Position)
+				item.Input = inputBuf.String()
 			}
 			nonRetriable = append(nonRetriable, item)
 			return

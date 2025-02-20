@@ -298,7 +298,7 @@ func TestItemRequireDataStream(t *testing.T) {
 	require.Equal(t, int64(2), stat.Indexed)
 }
 
-func TestPopulateFailedItemSource(t *testing.T) {
+func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 			_, result := docappendertest.DecodeBulkRequest(r)
@@ -318,8 +318,8 @@ func TestPopulateFailedItemSource(t *testing.T) {
 		})
 
 		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-			Client:                   client,
-			PopulateFailedDocsSource: enabled,
+			Client:                  client,
+			PopulateFailedDocsInput: enabled,
 		})
 		require.NoError(t, err)
 
@@ -351,7 +351,7 @@ func TestPopulateFailedItemSource(t *testing.T) {
 					Type   string `json:"type"`
 					Reason string `json:"reason"`
 				}{Type: "validation_error", Reason: "for testing"},
-				Source: `{"create":{"_index":"foo"}}
+				Input: `{"create":{"_index":"foo"}}
 {"1":"2"}
 `,
 			},
@@ -363,14 +363,14 @@ func TestPopulateFailedItemSource(t *testing.T) {
 					Type   string `json:"type"`
 					Reason string `json:"reason"`
 				}{Type: "validation_error", Reason: "for testing"},
-				Source: `{"create":{"_index":"bar"}}
+				Input: `{"create":{"_index":"bar"}}
 {"5":"6"}
 `,
 			},
 		}
 		if !enabled {
 			for i := 0; i < len(want); i++ {
-				want[i].Source = ""
+				want[i].Input = ""
 			}
 		}
 		assert.Equal(t, want, stat.FailedDocs)
