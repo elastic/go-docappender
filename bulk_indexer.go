@@ -114,6 +114,16 @@ type BulkIndexerResponseStat struct {
 	Indexed int64
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
+	// FailureStoreDocs contains failure store specific document stats.
+	FailureStoreDocs struct {
+		// Used contains the total number of documents indexed to failure store.
+		Used int64
+		// Failed contains the total number of documents which failed when indexed to failure store.
+		Failed int64
+		// NotEnabled contains the total number of documents which could have been indexed to failure store
+		// if it was enabled.
+		NotEnabled int64
+	}
 	// GreatestRetry contains the greatest observed retry count in the entire
 	// bulk request.
 	GreatestRetry int
@@ -134,6 +144,22 @@ type BulkIndexerResponseItem struct {
 	} `json:"error,omitempty"`
 }
 
+// FailureStoreStatus defines enumeration type for all known failure store statuses.
+type FailureStoreStatus string
+
+const (
+	// FailureStoreStatusUnknown implicit status which represents that there is no information about
+	// this response or that the failure store is not applicable.
+	FailureStoreStatusUnknown FailureStoreStatus = "not_applicable_or_unknown"
+	// FailureStoreStatusUsed status which represents that this document was stored in the failure store successfully.
+	FailureStoreStatusUsed FailureStoreStatus = "used"
+	// FailureStoreStatusFailed status which represents that this document was rejected from the failure store.
+	FailureStoreStatusFailed FailureStoreStatus = "failed"
+	// FailureStoreStatusNotEnabled status which represents that this document was rejected, but
+	// it could have ended up in the failure store if it was enabled.
+	FailureStoreStatusNotEnabled FailureStoreStatus = "not_enabled"
+)
+
 func init() {
 	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
@@ -149,6 +175,16 @@ func init() {
 								item.Index = i.ReadString()
 							case "status":
 								item.Status = i.ReadInt()
+							case "failure_store":
+								// For the stats track only actionable explicit failure store statuses "used", "failed" and "not_enabled".
+								switch fs := i.ReadString(); FailureStoreStatus(fs) {
+								case FailureStoreStatusUsed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Used++
+								case FailureStoreStatusFailed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Failed++
+								case FailureStoreStatusNotEnabled:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.NotEnabled++
+								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 									switch s {
@@ -419,7 +455,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// See: https://github.com/golang/go/issues/51907
 		Body:       bytes.NewReader(b.buf.Bytes()),
 		Header:     make(http.Header),
-		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
+		FilterPath: []string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"},
 		Pipeline:   b.config.Pipeline,
 	}
 	if b.requireDataStream {
