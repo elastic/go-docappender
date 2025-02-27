@@ -106,7 +106,7 @@ func DecodeBulkRequestWithStats(r *http.Request) (
 func DecodeBulkRequestWithStatsAndMeta(r *http.Request) (
 	docs [][]byte,
 	meta []BulkRequestItemMeta,
-	res esutil.BulkIndexerResponse,
+	res BulkIndexerResponse,
 	stats RequestStats,
 ) {
 	return decodeBulkRequest(r)
@@ -144,7 +144,7 @@ func DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r *http.Request) 
 func decodeBulkRequest(r *http.Request) (
 	docs [][]byte,
 	meta []BulkRequestItemMeta,
-	result esutil.BulkIndexerResponse,
+	result BulkIndexerResponse,
 	stats RequestStats,
 ) {
 	body := r.Body
