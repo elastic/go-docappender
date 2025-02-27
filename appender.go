@@ -409,13 +409,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		return err
 	}
-	var (
-		docsFailed, docsIndexed,
+	var docsFailed, docsIndexed,
 		// breakdown of failed docs:
 		tooManyRequests, // failed after document retries (if it applies) and final status is 429
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
-	)
+
+	failureStoreDocs := resp.FailureStoreDocs
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -483,11 +483,41 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
 		)
 	}
+	if failureStoreDocs.Used > 0 {
+		a.addCount(failureStoreDocs.Used, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusUsed)),
+			),
+		)
+	}
+	if failureStoreDocs.Failed > 0 {
+		a.addCount(failureStoreDocs.Failed, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusFailed)),
+			),
+		)
+	}
+	if failureStoreDocs.NotEnabled > 0 {
+		a.addCount(failureStoreDocs.NotEnabled, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
+			),
+		)
+	}
 	logger.Debug(
 		"bulk request completed",
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
+		zap.Int64("docs_failure_store_used", failureStoreDocs.Used),
+		zap.Int64("docs_failure_store_failed", failureStoreDocs.Failed),
+		zap.Int64("docs_failure_store_not_enabled", failureStoreDocs.NotEnabled),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")

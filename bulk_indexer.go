@@ -115,6 +115,16 @@ type BulkIndexerResponseStat struct {
 	Indexed int64
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
+	// FailureStoreDocs contains failure store specific document stats.
+	FailureStoreDocs struct {
+		// Used contains the total number of documents indexed to failure store.
+		Used int64
+		// Failed contains the total number of documents which failed when indexed to failure store.
+		Failed int64
+		// NotEnabled contains the total number of documents which could have been indexed to failure store
+		// if it was enabled.
+		NotEnabled int64
+	}
 	// GreatestRetry contains the greatest observed retry count in the entire
 	// bulk request.
 	GreatestRetry int
@@ -135,6 +145,22 @@ type BulkIndexerResponseItem struct {
 	} `json:"error,omitempty"`
 }
 
+// FailureStoreStatus defines enumeration type for all known failure store statuses.
+type FailureStoreStatus string
+
+const (
+	// FailureStoreStatusUnknown implicit status which represents that there is no information about
+	// this response or that the failure store is not applicable.
+	FailureStoreStatusUnknown FailureStoreStatus = "not_applicable_or_unknown"
+	// FailureStoreStatusUsed status which represents that this document was stored in the failure store successfully.
+	FailureStoreStatusUsed FailureStoreStatus = "used"
+	// FailureStoreStatusFailed status which represents that this document was rejected from the failure store.
+	FailureStoreStatusFailed FailureStoreStatus = "failed"
+	// FailureStoreStatusNotEnabled status which represents that this document was rejected, but
+	// it could have ended up in the failure store if it was enabled.
+	FailureStoreStatusNotEnabled FailureStoreStatus = "not_enabled"
+)
+
 func init() {
 	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
@@ -150,6 +176,16 @@ func init() {
 								item.Index = i.ReadString()
 							case "status":
 								item.Status = i.ReadInt()
+							case "failure_store":
+								// For the stats track only actionable explicit failure store statuses "used", "failed" and "not_enabled".
+								switch fs := i.ReadString(); FailureStoreStatus(fs) {
+								case FailureStoreStatusUsed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Used++
+								case FailureStoreStatusFailed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Failed++
+								case FailureStoreStatusNotEnabled:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.NotEnabled++
+								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 									switch s {
@@ -287,12 +323,13 @@ func (b *BulkIndexer) BytesUncompressedFlushed() int {
 }
 
 type BulkIndexerItem struct {
-	Index            string
-	DocumentID       string
-	Pipeline         string
-	Action           string
-	Body             io.WriterTo
-	DynamicTemplates map[string]string
+	Index             string
+	DocumentID        string
+	Pipeline          string
+	Action            string
+	Body              io.WriterTo
+	DynamicTemplates  map[string]string
+	RequireDataStream bool
 }
 
 // Add encodes an item in the buffer.
@@ -308,7 +345,14 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		return fmt.Errorf("%s is not a valid action", action)
 	}
 
-	b.writeMeta(item.Index, item.DocumentID, item.Pipeline, action, item.DynamicTemplates)
+	b.writeMeta(
+		item.Index,
+		item.DocumentID,
+		item.Pipeline,
+		action,
+		item.DynamicTemplates,
+		item.RequireDataStream,
+	)
 	if _, err := item.Body.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer item: %w", err)
 	}
@@ -319,7 +363,11 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	return nil
 }
 
-func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dynamicTemplates map[string]string) {
+func (b *BulkIndexer) writeMeta(
+	index, documentID, pipeline, action string,
+	dynamicTemplates map[string]string,
+	requireDataStream bool,
+) {
 	b.jsonw.RawString(`{"`)
 	b.jsonw.RawString(action)
 	b.jsonw.RawString(`":{`)
@@ -364,6 +412,13 @@ func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dyna
 		b.jsonw.RawByte('}')
 		first = false
 	}
+	if requireDataStream {
+		if !first {
+			b.jsonw.RawByte(',')
+		}
+		b.jsonw.RawString(`"require_data_stream":true`)
+		first = false
+	}
 	b.jsonw.RawString("}}\n")
 	b.writer.Write(b.jsonw.Bytes())
 	b.jsonw.Reset()
@@ -390,7 +445,7 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	v.Set("filter_path", "items.*._index,items.*.status,items.*.error.type,items.*.error.reason")
+	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
 
 	req.URL.RawQuery = v.Encode()
 
