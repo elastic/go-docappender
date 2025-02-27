@@ -51,7 +51,6 @@ import (
 
 	"github.com/elastic/go-docappender/v2"
 	"github.com/elastic/go-docappender/v2/docappendertest"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
 func TestAppender(t *testing.T) {
@@ -66,18 +65,24 @@ func TestAppender(t *testing.T) {
 		// "too many requests". These will be recorded as failures in indexing
 		// stats.
 		for i := range result.Items {
-			if i > 2 {
+			if i > 5 {
 				break
 			}
-			status := http.StatusInternalServerError
-			switch i {
-			case 1:
-				status = http.StatusTooManyRequests
-			case 2:
-				status = http.StatusUnauthorized
-			}
 			for action, item := range result.Items[i] {
-				item.Status = status
+				switch i {
+				case 0:
+					item.Status = http.StatusInternalServerError
+				case 1:
+					item.Status = http.StatusTooManyRequests
+				case 2:
+					item.Status = http.StatusUnauthorized
+				case 3:
+					item.FailureStore = string(docappender.FailureStoreStatusUsed)
+				case 4:
+					item.FailureStore = string(docappender.FailureStoreStatusFailed)
+				case 5:
+					item.FailureStore = string(docappender.FailureStoreStatusNotEnabled)
+				}
 				result.Items[i][action] = item
 			}
 		}
@@ -156,7 +161,7 @@ loop:
 		asserted.Add(1)
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
-			metricdatatest.AssertHasAttributes[metricdata.DataPoint[int64]](t, dp, attrs.ToSlice()...)
+			metricdatatest.AssertHasAttributes(t, dp, attrs.ToSlice()...)
 			status, exist := dp.Attributes.Value(attribute.Key("status"))
 			assert.True(t, exist)
 			switch status.AsString() {
@@ -172,6 +177,19 @@ loop:
 			case "TooMany":
 				processedAsserted++
 				assert.Equal(t, stats.TooManyRequests, dp.Value)
+			case "FailureStore":
+				processedAsserted++
+				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
+				assert.True(t, exist)
+				assert.Contains(
+					t,
+					[]docappender.FailureStoreStatus{
+						docappender.FailureStoreStatusUsed,
+						docappender.FailureStoreStatusFailed,
+						docappender.FailureStoreStatusNotEnabled,
+					},
+					docappender.FailureStoreStatus(fs.AsString()),
+				)
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
 			}
@@ -205,7 +223,7 @@ loop:
 
 	assert.Empty(t, unexpectedMetrics)
 	assert.Equal(t, int64(7), asserted.Load())
-	assert.Equal(t, 4, processedAsserted)
+	assert.Equal(t, 7, processedAsserted)
 }
 
 func TestAppenderRetry(t *testing.T) {
@@ -421,7 +439,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 func TestAppenderEncoding(t *testing.T) {
 	var indexed [][]byte
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		var result esutil.BulkIndexerResponse
+		var result docappendertest.BulkIndexerResponse
 		indexed, result = docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
@@ -565,7 +583,7 @@ func TestAppenderFlushTimeout(t *testing.T) {
 }
 
 func TestAppenderFlushMetric(t *testing.T) {
-	requests := make(chan esutil.BulkIndexerResponse)
+	requests := make(chan docappendertest.BulkIndexerResponse)
 	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
 		_, items := docappendertest.DecodeBulkRequest(r)
 		select {
@@ -753,7 +771,6 @@ func TestAppenderFlushRequestError(t *testing.T) {
 			}
 		})
 		assert.Equal(t, int64(1), asserted.Load())
-
 	}
 	t.Run("400", func(t *testing.T) {
 		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] "+string(error))
@@ -1311,7 +1328,8 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		BytesTotal:             bytesTotal,
 		BytesUncompressedTotal: bytesUncompressedTotal,
 		AvailableBulkRequests:  10,
-		IndexersActive:         0}, indexer.Stats())
+		IndexersActive:         0,
+	}, indexer.Stats())
 }
 
 func TestAppenderPipeline(t *testing.T) {
