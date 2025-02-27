@@ -434,7 +434,7 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
 	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
-  v.Set("include_source_on_error", "false")
+	v.Set("include_source_on_error", "false")
 
 	req.URL.RawQuery = v.Encode()
 
