@@ -773,22 +773,22 @@ func TestAppenderFlushRequestError(t *testing.T) {
 		assert.Equal(t, int64(1), asserted.Load())
 	}
 	t.Run("400", func(t *testing.T) {
-		test(t, http.StatusBadRequest, "flush failed (400): [400 Bad Request] "+string(error))
+		test(t, http.StatusBadRequest, "flush failed (400): "+string(error))
 	})
 	t.Run("403", func(t *testing.T) {
-		test(t, http.StatusForbidden, "flush failed (403): [403 Forbidden] "+string(error))
+		test(t, http.StatusForbidden, "flush failed (403): "+string(error))
 	})
 	t.Run("429", func(t *testing.T) {
-		test(t, http.StatusTooManyRequests, "flush failed (429): [429 Too Many Requests] "+string(error))
+		test(t, http.StatusTooManyRequests, "flush failed (429): "+string(error))
 	})
 	t.Run("500", func(t *testing.T) {
-		test(t, http.StatusInternalServerError, "flush failed (500): [500 Internal Server Error] "+string(error))
+		test(t, http.StatusInternalServerError, "flush failed (500): "+string(error))
 	})
 	t.Run("503", func(t *testing.T) {
-		test(t, http.StatusServiceUnavailable, "flush failed (503): [503 Service Unavailable] "+string(error))
+		test(t, http.StatusServiceUnavailable, "flush failed (503): "+string(error))
 	})
 	t.Run("504", func(t *testing.T) {
-		test(t, http.StatusGatewayTimeout, "flush failed (504): [504 Gateway Timeout] "+string(error))
+		test(t, http.StatusGatewayTimeout, "flush failed (504): "+string(error))
 	})
 }
 

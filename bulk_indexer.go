@@ -25,7 +25,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
-  "strconv"
+	"strconv"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -490,7 +490,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.StatusCode > 299 {
-		e := errorFlushFailed{resp: res.String(), statusCode: res.StatusCode}
+		b, err := io.ReadAll(res.Body)
+		if err != nil {
+			return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
+		}
+		e := errorFlushFailed{resp: string(b), statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
