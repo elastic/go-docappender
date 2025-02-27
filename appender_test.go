@@ -437,7 +437,6 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 	}, stats)
 }
 
-
 func TestAppenderEncoding(t *testing.T) {
 	var indexed [][]byte
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
