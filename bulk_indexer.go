@@ -26,13 +26,14 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -61,7 +62,7 @@ const (
 // BulkIndexerConfig holds configuration for BulkIndexer.
 type BulkIndexerConfig struct {
 	// Client holds the Elasticsearch client.
-	Client esapi.Transport
+	Client elastictransport.Interface
 
 	// MaxDocumentRetries holds the maximum number of document retries
 	MaxDocumentRetries int
@@ -368,6 +369,34 @@ func (b *BulkIndexer) writeMeta(index, documentID, pipeline, action string, dyna
 	b.jsonw.Reset()
 }
 
+func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, error) {
+	// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
+	// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
+	// reading from the buffer after the request is done and the call to `req.Do` has returned.
+	// This may happen in HTTP error cases when the server isn't required to read the full
+	// request body before sending a response.
+	// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
+	// internal member variables (b.buf.off, b.buf.lastRead).
+	// See: https://github.com/golang/go/issues/51907
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http:///_bulk", bytes.NewReader(b.buf.Bytes()))
+	if err != nil {
+		return nil, err
+	}
+
+	v := req.URL.Query()
+	if b.config.Pipeline != "" {
+		v.Set("pipeline", b.config.Pipeline)
+	}
+	if b.config.RequireDataStream {
+		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
+	}
+	v.Set("filter_path", "items.*._index,items.*.status,items.*.error.type,items.*.error.reason")
+
+	req.URL.RawQuery = v.Encode()
+
+	return req, nil
+}
+
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
 func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
@@ -389,30 +418,18 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		copy(b.copyBuf, b.buf.Bytes())
 	}
 
-	req := esapi.BulkRequest{
-		// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
-		// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
-		// reading from the buffer after the request is done and the call to `req.Do` has returned.
-		// This may happen in HTTP error cases when the server isn't required to read the full
-		// request body before sending a response.
-		// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
-		// internal member variables (b.buf.off, b.buf.lastRead).
-		// See: https://github.com/golang/go/issues/51907
-		Body:       bytes.NewReader(b.buf.Bytes()),
-		Header:     make(http.Header),
-		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
-		Pipeline:   b.config.Pipeline,
+	req, err := b.newBulkIndexRequest(ctx)
+	if err != nil {
+		return BulkIndexerResponseStat{}, fmt.Errorf("failed to create bulk index request: %w", err)
 	}
-	if b.requireDataStream {
-		req.RequireDataStream = &b.requireDataStream
-	}
+
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
 	bytesFlushed := b.buf.Len()
 	bytesUncompFlushed := b.writer.bytesWritten
-	res, err := req.Do(ctx, b.config.Client)
+	res, err := b.config.Client.Perform(req)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
@@ -428,7 +445,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesFlushed = bytesFlushed
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
-	if res.IsError() {
+	if res.StatusCode > 299 {
 		var s string
 		var er struct {
 			Error struct {

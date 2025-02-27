@@ -3,7 +3,7 @@ module github.com/elastic/go-docappender/v2
 go 1.22
 
 require (
-	github.com/elastic/go-elasticsearch/v8 v8.17.0
+	github.com/elastic/elastic-transport-go/v8 v8.6.0
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.17.11
 	github.com/stretchr/testify v1.10.0
@@ -23,7 +23,6 @@ require (
 require (
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.6.0 // indirect
 	github.com/elastic/go-sysinfo v1.7.1 // indirect
 	github.com/elastic/go-windows v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
