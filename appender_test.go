@@ -52,7 +52,6 @@ import (
 
 	"github.com/elastic/go-docappender/v2"
 	"github.com/elastic/go-docappender/v2/docappendertest"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
 func TestAppender(t *testing.T) {
@@ -441,7 +440,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 func TestAppenderEncoding(t *testing.T) {
 	var indexed [][]byte
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		var result esutil.BulkIndexerResponse
+		var result docappendertest.BulkIndexerResponse
 		indexed, result = docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
@@ -585,7 +584,7 @@ func TestAppenderFlushTimeout(t *testing.T) {
 }
 
 func TestAppenderFlushMetric(t *testing.T) {
-	requests := make(chan esutil.BulkIndexerResponse)
+	requests := make(chan docappendertest.BulkIndexerResponse)
 	client := docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
 		_, items := docappendertest.DecodeBulkRequest(r)
 		select {

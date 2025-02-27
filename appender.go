@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
@@ -97,7 +97,7 @@ type Appender struct {
 
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func New(client esapi.Transport, cfg Config) (*Appender, error) {
+func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	if client == nil {
 		return nil, errors.New("client is nil")
 	}
