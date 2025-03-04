@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -421,11 +422,12 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
 	// internal member variables (b.buf.off, b.buf.lastRead).
 	// See: https://github.com/golang/go/issues/51907
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http:///_bulk", bytes.NewReader(b.buf.Bytes()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/_bulk", bytes.NewReader(b.buf.Bytes()))
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Add("Content-Type", "application/json")
 	v := req.URL.Query()
 	if b.config.Pipeline != "" {
 		v.Set("pipeline", b.config.Pipeline)
@@ -433,7 +435,7 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
+	v.Set("filter_path", strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","))
 	v.Set("include_source_on_error", "false")
 
 	req.URL.RawQuery = v.Encode()
