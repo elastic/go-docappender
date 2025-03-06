@@ -91,6 +91,12 @@ type BulkIndexerConfig struct {
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
+
+	// IncludeSourceOnError, If set to true, the response body of a Bulk Index request
+	// might contain the part of source document on error
+	//
+	// IncludeSourceOnError is disabled by default
+	IncludeSourceOnError bool
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -436,7 +442,9 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
 	v.Set("filter_path", strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","))
-	v.Set("include_source_on_error", "false")
+	if !b.config.IncludeSourceOnError {
+		v.Set("include_source_on_error", "false")
+	}
 
 	req.URL.RawQuery = v.Encode()
 
@@ -496,7 +504,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		if err != nil {
 			return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
 		}
-		e := errorFlushFailed{resp: string(b), statusCode: res.StatusCode}
+		e := &ErrorFlushFailed{resp: string(b), statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -684,7 +692,7 @@ func indexnth(s []byte, nth int, sep rune) int {
 	})
 }
 
-type errorFlushFailed struct {
+type ErrorFlushFailed struct {
 	resp        string
 	statusCode  int
 	tooMany     bool
@@ -692,6 +700,14 @@ type errorFlushFailed struct {
 	serverError bool
 }
 
-func (e errorFlushFailed) Error() string {
+func (e *ErrorFlushFailed) StatusCode() int {
+	return e.statusCode
+}
+
+func (e *ErrorFlushFailed) ResponseBody() string {
+	return e.resp
+}
+
+func (e *ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
 }

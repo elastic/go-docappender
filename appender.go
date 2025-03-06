@@ -389,7 +389,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 
 		// Bulk indexing may fail with different status codes.
-		var errFailed errorFlushFailed
+		errFailed := &ErrorFlushFailed{}
 		if errors.As(err, &errFailed) {
 			var legacy *int64
 			var status string

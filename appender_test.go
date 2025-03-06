@@ -57,6 +57,7 @@ func TestAppender(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "false", r.URL.Query().Get("include_source_on_error"))
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
 		bytesUncompressed += stat.UncompressedBytes
