@@ -1,6 +1,7 @@
 module github.com/elastic/go-docappender/v2
 
 go 1.22.0
+toolchain go1.23.7
 
 require (
 	github.com/elastic/elastic-transport-go/v8 v8.6.1
@@ -10,7 +11,7 @@ require (
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.3
 	go.elastic.co/apm/module/apmzap/v2 v2.6.3
 	go.elastic.co/apm/v2 v2.6.3
-	go.elastic.co/fastjson v1.4.0
+	go.elastic.co/fastjson v1.5.0
 	go.opentelemetry.io/otel v1.35.0
 	go.opentelemetry.io/otel/metric v1.35.0
 	go.opentelemetry.io/otel/sdk v1.35.0
