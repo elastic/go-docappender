@@ -92,8 +92,11 @@ type BulkIndexerConfig struct {
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
 
-	// IncludeSourceOnError, If set to true, the response body of a Bulk Index request
-	// might contain the part of source document on error
+	// IncludeSourceOnError, if set to true, the response body of a Bulk Index request
+	// might contain the part of source document on error.
+	// Requires Elasticsearch 8.18+.
+	// WARNING: if set to true, user is responsible for sanitizing the error as it may contain
+	// sensitive data.
 	//
 	// IncludeSourceOnError is disabled by default
 	IncludeSourceOnError bool
