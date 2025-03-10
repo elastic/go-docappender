@@ -445,7 +445,7 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	v.Set("filter_path", strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","))
+	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
 	if b.config.IncludeSourceOnError != Unset {
 		switch b.config.IncludeSourceOnError {
 		case False:
