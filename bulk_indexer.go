@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
