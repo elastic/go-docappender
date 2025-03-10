@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -793,6 +794,67 @@ func TestAppenderFlushRequestError(t *testing.T) {
 	t.Run("504", func(t *testing.T) {
 		test(t, http.StatusGatewayTimeout, "flush failed (504): "+string(error))
 	})
+}
+
+func TestAppenderIndexFailedLogging(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		for i, item := range result.Items {
+			itemResp := item["create"]
+			itemResp.Index = "an_index"
+			switch i % 5 {
+			case 0:
+				itemResp.Error.Type = "error_type"
+				itemResp.Error.Reason = "error_reason_even. Preview of field's value: 'abc def ghi'"
+			case 1:
+				itemResp.Error.Type = "error_type2"
+				itemResp.Error.Reason = "error_reason_odd. Preview of field's value: some field value"
+			case 2:
+				itemResp.Error.Type = "unavailable_shards_exception"
+				itemResp.Error.Reason = "this reason should not be logged"
+			case 3:
+				itemResp.Error.Type = "x_content_parse_exception"
+				itemResp.Error.Reason = "this reason should not be logged"
+			case 4:
+				itemResp.Error.Type = "document_parsing_exception"
+				itemResp.Error.Reason = "this reason should not be logged"
+			}
+			item["create"] = itemResp
+		}
+		result.HasErrors = true
+		json.NewEncoder(w).Encode(result)
+	})
+
+	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+	indexer, err := docappender.New(client, docappender.Config{
+		FlushBytes: 5000,
+		Logger:     zap.New(core),
+	})
+	require.NoError(t, err)
+	defer indexer.Close(context.Background())
+
+	const N = 5 * 2
+	for range N {
+		addMinimalDoc(t, indexer, "logs-foo-testing")
+	}
+	err = indexer.Close(context.Background())
+	assert.NoError(t, err)
+
+	entries := observed.FilterMessageSnippet("failed to index").TakeAll()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Message < entries[j].Message
+	})
+	require.Len(t, entries, N/2)
+	assert.Equal(t, "failed to index documents in 'an_index' (document_parsing_exception): ", entries[0].Message)
+	assert.Equal(t, int64(2), entries[0].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type): ", entries[1].Message)
+	assert.Equal(t, int64(2), entries[1].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (error_type2): ", entries[2].Message)
+	assert.Equal(t, int64(2), entries[2].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (unavailable_shards_exception): ", entries[3].Message)
+	assert.Equal(t, int64(2), entries[3].Context[0].Integer)
+	assert.Equal(t, "failed to index documents in 'an_index' (x_content_parse_exception): ", entries[4].Message)
+	assert.Equal(t, int64(2), entries[4].Context[0].Integer)
 }
 
 func TestAppenderRetryLimit(t *testing.T) {

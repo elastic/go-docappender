@@ -552,8 +552,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	if b.config.IncludeSourceOnError == Unset {
-		for _, doc := range resp.FailedDocs {
+		for i, doc := range resp.FailedDocs {
 			doc.Error.Reason = ""
+			resp.FailedDocs[i] = doc
 		}
 	}
 
