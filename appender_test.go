@@ -700,100 +700,94 @@ func TestAppenderFlushBytes(t *testing.T) {
 }
 
 func TestAppenderFlushRequestError(t *testing.T) {
-	error := []byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`)
+	originalError := []byte(`{"error": {"root_cause": [{"type": "x_content_parse_exception","reason": "reason"}],"type": "x_content_parse_exception","reason": "reason","caused_by": {"type": "json_parse_exception","reason": "reason"}},"status": 400}`)
+	reducedError := []byte(`{"error":{"type":"x_content_parse_exception","caused_by":{"type":"json_parse_exception"}}}`)
+
 	// This test ensures that the appender correctly categorizes and quantifies
 	// failed requests with different failure scenarios. Since a bulk request
 	// contains N documents, the appender should increment the categorized
 	// failure by the same number of documents in the request.
-	test := func(t *testing.T, sc int, errMsg string) {
-		var bytesTotal int64
-		var bytesUncompressedTotal int64
-		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-			bytesTotal += r.ContentLength
-			_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
-			bytesUncompressedTotal += stat.UncompressedBytes
-			w.WriteHeader(sc)
-			w.Write(error)
-		})
+	for _, includeSource := range []docappender.Value{docappender.Unset, docappender.True} {
+		for _, sc := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+			t.Run(strconv.Itoa(sc)+"/"+strconv.Itoa(int(includeSource)), func(t *testing.T) {
+				var bytesTotal int64
+				var bytesUncompressedTotal int64
+				client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+					bytesTotal += r.ContentLength
+					_, _, stat := docappendertest.DecodeBulkRequestWithStats(r)
+					bytesUncompressedTotal += stat.UncompressedBytes
+					w.WriteHeader(sc)
+					w.Write(originalError)
+				})
 
-		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
-			func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-				return metricdata.DeltaTemporality
-			},
-		))
+				rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+					func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+						return metricdata.DeltaTemporality
+					},
+				))
 
-		indexer, err := docappender.New(client, docappender.Config{
-			FlushInterval:        time.Minute,
-			MeterProvider:        sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
-			IncludeSourceOnError: docappender.True,
-		})
-		require.NoError(t, err)
-		defer indexer.Close(context.Background())
+				indexer, err := docappender.New(client, docappender.Config{
+					FlushInterval:        time.Minute,
+					MeterProvider:        sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+					IncludeSourceOnError: includeSource,
+				})
+				require.NoError(t, err)
+				defer indexer.Close(context.Background())
 
-		// Send 3 docs, ensure that metrics are always in the unit of documents, not requests.
-		docs := 3
-		for i := 0; i < docs; i++ {
-			addMinimalDoc(t, indexer, "logs-foo-testing")
+				// Send 3 docs, ensure that metrics are always in the unit of documents, not requests.
+				docs := 3
+				for range docs {
+					addMinimalDoc(t, indexer, "logs-foo-testing")
+				}
+
+				// Closing the indexer flushes enqueued documents.
+				err = indexer.Close(context.Background())
+				if includeSource == docappender.True {
+					errMsg := fmt.Sprintf("flush failed (%d): %s", sc, originalError)
+					require.EqualError(t, err, errMsg)
+				} else {
+					errMsg := fmt.Sprintf("flush failed (%d): %s", sc, reducedError)
+					require.EqualError(t, err, errMsg)
+				}
+				stats := indexer.Stats()
+				wantStats := docappender.Stats{
+					Added:                  int64(docs),
+					Active:                 0,
+					BulkRequests:           1, // Single bulk request
+					Failed:                 int64(docs),
+					AvailableBulkRequests:  10,
+					BytesTotal:             bytesTotal,
+					BytesUncompressedTotal: bytesUncompressedTotal,
+				}
+				var status string
+				switch {
+				case sc == 429:
+					status = "TooMany"
+					wantStats.TooManyRequests = int64(docs)
+				case sc >= 500:
+					status = "FailedServer"
+					wantStats.FailedServer = int64(docs)
+				case sc >= 400 && sc != 429:
+					status = "FailedClient"
+					wantStats.FailedClient = int64(docs)
+				}
+				assert.Equal(t, wantStats, stats)
+
+				var rm metricdata.ResourceMetrics
+				assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+				var asserted atomic.Int64
+				assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+				docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+					switch m.Name {
+					case "elasticsearch.events.processed":
+						assertCounter(m, 3, attribute.NewSet(attribute.String("status", status), semconv.HTTPResponseStatusCode(sc)))
+					}
+				})
+				assert.Equal(t, int64(1), asserted.Load())
+			})
 		}
-
-		// Closing the indexer flushes enqueued documents.
-		err = indexer.Close(context.Background())
-		require.EqualError(t, err, errMsg)
-		stats := indexer.Stats()
-		wantStats := docappender.Stats{
-			Added:                  int64(docs),
-			Active:                 0,
-			BulkRequests:           1, // Single bulk request
-			Failed:                 int64(docs),
-			AvailableBulkRequests:  10,
-			BytesTotal:             bytesTotal,
-			BytesUncompressedTotal: bytesUncompressedTotal,
-		}
-		var status string
-		switch {
-		case sc == 429:
-			status = "TooMany"
-			wantStats.TooManyRequests = int64(docs)
-		case sc >= 500:
-			status = "FailedServer"
-			wantStats.FailedServer = int64(docs)
-		case sc >= 400 && sc != 429:
-			status = "FailedClient"
-			wantStats.FailedClient = int64(docs)
-		}
-		assert.Equal(t, wantStats, stats)
-
-		var rm metricdata.ResourceMetrics
-		assert.NoError(t, rdr.Collect(context.Background(), &rm))
-
-		var asserted atomic.Int64
-		assertCounter := docappendertest.NewAssertCounter(t, &asserted)
-		docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
-			switch m.Name {
-			case "elasticsearch.events.processed":
-				assertCounter(m, 3, attribute.NewSet(attribute.String("status", status), semconv.HTTPResponseStatusCode(sc)))
-			}
-		})
-		assert.Equal(t, int64(1), asserted.Load())
 	}
-	t.Run("400", func(t *testing.T) {
-		test(t, http.StatusBadRequest, "flush failed (400): "+string(error))
-	})
-	t.Run("403", func(t *testing.T) {
-		test(t, http.StatusForbidden, "flush failed (403): "+string(error))
-	})
-	t.Run("429", func(t *testing.T) {
-		test(t, http.StatusTooManyRequests, "flush failed (429): "+string(error))
-	})
-	t.Run("500", func(t *testing.T) {
-		test(t, http.StatusInternalServerError, "flush failed (500): "+string(error))
-	})
-	t.Run("503", func(t *testing.T) {
-		test(t, http.StatusServiceUnavailable, "flush failed (503): "+string(error))
-	})
-	t.Run("504", func(t *testing.T) {
-		test(t, http.StatusGatewayTimeout, "flush failed (504): "+string(error))
-	})
 }
 
 func TestAppenderIndexFailedLogging(t *testing.T) {
