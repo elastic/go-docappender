@@ -20,6 +20,7 @@ package docappender
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,8 +99,8 @@ type BulkIndexerConfig struct {
 	// WARNING: if set to true, user is responsible for sanitizing the error as it may contain
 	// sensitive data.
 	//
-	// IncludeSourceOnError is disabled by default
-	IncludeSourceOnError bool
+	// IncludeSourceOnError is Unset by default
+	IncludeSourceOnError Value
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -445,8 +446,13 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
 	v.Set("filter_path", strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","))
-	if !b.config.IncludeSourceOnError {
-		v.Set("include_source_on_error", "false")
+	if b.config.IncludeSourceOnError != Unset {
+		switch b.config.IncludeSourceOnError {
+		case False:
+			v.Set("include_source_on_error", "false")
+		case True:
+			v.Set("include_source_on_error", "true")
+		}
 	}
 
 	req.URL.RawQuery = v.Encode()
@@ -503,11 +509,34 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
 	if res.StatusCode > 299 {
-		b, err := io.ReadAll(res.Body)
-		if err != nil {
-			return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
+		var s string
+		if b.config.IncludeSourceOnError == Unset {
+			var er struct {
+				Error struct {
+					Type     string `json:"type,omitempty"`
+					Reason   string `json:"reason,omitempty"`
+					CausedBy struct {
+						Type   string `json:"type,omitempty"`
+						Reason string `json:"reason,omitempty"`
+					} `json:"caused_by,omitempty"`
+				} `json:"error,omitempty"`
+			}
+
+			if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
+				er.Error.Reason = ""
+				er.Error.CausedBy.Reason = ""
+
+				b, _ := json.Marshal(&er)
+				s = string(b)
+			}
+		} else {
+			b, err := io.ReadAll(res.Body)
+			if err != nil {
+				return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
+			}
+			s = string(b)
 		}
-		e := &ErrorFlushFailed{resp: string(b), statusCode: res.StatusCode}
+		e := &ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -521,6 +550,12 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+
+	if b.config.IncludeSourceOnError == Unset {
+		for _, doc := range resp.FailedDocs {
+			doc.Error.Reason = ""
+		}
 	}
 
 	// Only run the retry logic if document retries are enabled
