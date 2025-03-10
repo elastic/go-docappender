@@ -57,7 +57,8 @@ func TestAppender(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "false", r.URL.Query().Get("include_source_on_error"))
+		require.Len(t, r.URL.Query(), 1)
+		require.Equal(t, strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","), r.URL.Query().Get("filter_path"))
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
 		bytesUncompressed += stat.UncompressedBytes
@@ -721,8 +722,9 @@ func TestAppenderFlushRequestError(t *testing.T) {
 		))
 
 		indexer, err := docappender.New(client, docappender.Config{
-			FlushInterval: time.Minute,
-			MeterProvider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+			FlushInterval:        time.Minute,
+			MeterProvider:        sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+			IncludeSourceOnError: docappender.True,
 		})
 		require.NoError(t, err)
 		defer indexer.Close(context.Background())

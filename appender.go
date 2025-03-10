@@ -162,6 +162,7 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 			CompressionLevel:      cfg.CompressionLevel,
 			Pipeline:              cfg.Pipeline,
 			RequireDataStream:     cfg.RequireDataStream,
+			IncludeSourceOnError:  cfg.IncludeSourceOnError,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
