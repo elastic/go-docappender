@@ -1457,6 +1457,48 @@ func TestAppenderRequireDataStream(t *testing.T) {
 	assert.Equal(t, expected, actual)
 }
 
+func TestAppenderIncludeSource(t *testing.T) {
+	for name, tc := range map[string]struct {
+		includeSource docappender.Value
+		expected      string
+	}{
+		"true": {
+			includeSource: docappender.True,
+			expected:      "true",
+		},
+		"false": {
+			includeSource: docappender.False,
+			expected:      "false",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, tc.expected, r.URL.Query().Get("include_source_on_error"))
+				_, result := docappendertest.DecodeBulkRequest(r)
+				json.NewEncoder(w).Encode(result)
+			})
+			indexer, err := docappender.New(client, docappender.Config{
+				FlushInterval:        time.Minute,
+				IncludeSourceOnError: tc.includeSource,
+			})
+			require.NoError(t, err)
+			defer indexer.Close(context.Background())
+
+			err = indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
+				"@timestamp":            time.Unix(123, 456789111).UTC().Format(docappendertest.TimestampFormat),
+				"data_stream.type":      "logs",
+				"data_stream.dataset":   "foo",
+				"data_stream.namespace": "testing",
+			}))
+			require.NoError(t, err)
+
+			// Closing the indexer flushes enqueued documents.
+			err = indexer.Close(context.Background())
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestAppenderScaling(t *testing.T) {
 	newIndexer := func(t *testing.T, cfg docappender.Config) *docappender.Appender {
 		t.Helper()
