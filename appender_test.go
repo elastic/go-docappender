@@ -707,7 +707,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 	// failed requests with different failure scenarios. Since a bulk request
 	// contains N documents, the appender should increment the categorized
 	// failure by the same number of documents in the request.
-	for _, includeSource := range []docappender.Value{docappender.Unset, docappender.True} {
+	for _, includeSource := range []docappender.Value{docappender.Unset, docappender.True, docappender.False} {
 		for _, sc := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
 			t.Run(strconv.Itoa(sc)+"/"+strconv.Itoa(int(includeSource)), func(t *testing.T) {
 				var bytesTotal int64
@@ -742,12 +742,17 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 				// Closing the indexer flushes enqueued documents.
 				err = indexer.Close(context.Background())
-				if includeSource == docappender.True {
+				switch includeSource {
+				case docappender.False, docappender.True:
+					// include_source=false is implemented in ES so we just assert we're not
+					// tampering with the error message
 					errMsg := fmt.Sprintf("flush failed (%d): %s", sc, originalError)
 					require.EqualError(t, err, errMsg)
-				} else {
+				case docappender.Unset:
 					errMsg := fmt.Sprintf("flush failed (%d): %s", sc, reducedError)
 					require.EqualError(t, err, errMsg)
+				default:
+					t.Fatal("unknown include source setting")
 				}
 				stats := indexer.Stats()
 				wantStats := docappender.Stats{
