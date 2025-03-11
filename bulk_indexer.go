@@ -535,7 +535,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 			s = string(b)
 		}
-		e := &ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
+		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -738,14 +738,14 @@ type ErrorFlushFailed struct {
 	serverError bool
 }
 
-func (e *ErrorFlushFailed) StatusCode() int {
+func (e ErrorFlushFailed) StatusCode() int {
 	return e.statusCode
 }
 
-func (e *ErrorFlushFailed) ResponseBody() string {
+func (e ErrorFlushFailed) ResponseBody() string {
 	return e.resp
 }
 
-func (e *ErrorFlushFailed) Error() string {
+func (e ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
 }
