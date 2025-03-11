@@ -94,6 +94,7 @@ type BulkIndexerConfig struct {
 
 	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
 	// might contain the part of source document on error.
+	// If Unset the error reason will be dropped.
 	// Requires Elasticsearch 8.18+ if value is True or False.
 	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
 	// sensitive data.
