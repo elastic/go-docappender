@@ -27,6 +27,14 @@ import (
 	"go.uber.org/zap"
 )
 
+type Value int
+
+const (
+	Unset Value = iota
+	True
+	False
+)
+
 // Config holds configuration for Appender.
 type Config struct {
 	// Logger holds an optional Logger to use for logging indexing requests.
@@ -112,6 +120,16 @@ type Config struct {
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
+
+	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
+	// might contain the part of source document on error.
+	// If Unset the error reason will be dropped.
+	// Requires Elasticsearch 8.18+ if value is True or False.
+	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
+	// sensitive data.
+	//
+	// IncludeSourceOnError is Unset by default
+	IncludeSourceOnError Value
 
 	// Scaling configuration for the docappender.
 	//

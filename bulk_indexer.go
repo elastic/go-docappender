@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
@@ -92,6 +91,16 @@ type BulkIndexerConfig struct {
 	//
 	// RequireDataStream is disabled by default.
 	RequireDataStream bool
+
+	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
+	// might contain the part of source document on error.
+	// If Unset the error reason will be dropped.
+	// Requires Elasticsearch 8.18+ if value is True or False.
+	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
+	// sensitive data.
+	//
+	// IncludeSourceOnError is Unset by default
+	IncludeSourceOnError Value
 }
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -192,13 +201,7 @@ func init() {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										reason := i.ReadString()
-										// Match Elasticsearch field mapper field value:
-										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-										item.Error.Reason, _, _ = strings.Cut(
-											reason, ". Preview",
-										)
+										item.Error.Reason = i.ReadString()
 									default:
 										i.Skip()
 									}
@@ -209,10 +212,6 @@ func init() {
 							}
 							return true
 						})
-						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" || item.Error.Type == "document_parsing_exception" {
-							item.Error.Reason = ""
-						}
 
 						item.Position = idx
 						idx++
@@ -433,11 +432,12 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
 	// internal member variables (b.buf.off, b.buf.lastRead).
 	// See: https://github.com/golang/go/issues/51907
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http:///_bulk", bytes.NewReader(b.buf.Bytes()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/_bulk", bytes.NewReader(b.buf.Bytes()))
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Add("Content-Type", "application/json")
 	v := req.URL.Query()
 	if b.config.Pipeline != "" {
 		v.Set("pipeline", b.config.Pipeline)
@@ -446,6 +446,14 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
 	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
+	if b.config.IncludeSourceOnError != Unset {
+		switch b.config.IncludeSourceOnError {
+		case False:
+			v.Set("include_source_on_error", "false")
+		case True:
+			v.Set("include_source_on_error", "true")
+		}
+	}
 
 	req.URL.RawQuery = v.Encode()
 
@@ -502,26 +510,33 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	var resp BulkIndexerResponseStat
 	if res.StatusCode > 299 {
 		var s string
-		var er struct {
-			Error struct {
-				Type     string `json:"type,omitempty"`
-				Reason   string `json:"reason,omitempty"`
-				CausedBy struct {
-					Type   string `json:"type,omitempty"`
-					Reason string `json:"reason,omitempty"`
-				} `json:"caused_by,omitempty"`
-			} `json:"error,omitempty"`
-		}
+		if b.config.IncludeSourceOnError == Unset {
+			var er struct {
+				Error struct {
+					Type     string `json:"type,omitempty"`
+					Reason   string `json:"reason,omitempty"`
+					CausedBy struct {
+						Type   string `json:"type,omitempty"`
+						Reason string `json:"reason,omitempty"`
+					} `json:"caused_by,omitempty"`
+				} `json:"error,omitempty"`
+			}
 
-		if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
-			er.Error.Reason = ""
-			er.Error.CausedBy.Reason = ""
+			if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
+				er.Error.Reason = ""
+				er.Error.CausedBy.Reason = ""
 
-			b, _ := json.Marshal(&er)
+				b, _ := json.Marshal(&er)
+				s = string(b)
+			}
+		} else {
+			b, err := io.ReadAll(res.Body)
+			if err != nil {
+				return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
+			}
 			s = string(b)
 		}
-
-		e := errorFlushFailed{resp: s, statusCode: res.StatusCode}
+		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -535,6 +550,13 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+
+	if b.config.IncludeSourceOnError == Unset {
+		for i, doc := range resp.FailedDocs {
+			doc.Error.Reason = ""
+			resp.FailedDocs[i] = doc
+		}
 	}
 
 	// Only run the retry logic if document retries are enabled
@@ -709,7 +731,7 @@ func indexnth(s []byte, nth int, sep rune) int {
 	})
 }
 
-type errorFlushFailed struct {
+type ErrorFlushFailed struct {
 	resp        string
 	statusCode  int
 	tooMany     bool
@@ -717,6 +739,14 @@ type errorFlushFailed struct {
 	serverError bool
 }
 
-func (e errorFlushFailed) Error() string {
+func (e ErrorFlushFailed) StatusCode() int {
+	return e.statusCode
+}
+
+func (e ErrorFlushFailed) ResponseBody() string {
+	return e.resp
+}
+
+func (e ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
 }
