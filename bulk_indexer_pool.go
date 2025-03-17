@@ -86,7 +86,7 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 	defer p.mu.RUnlock()
 	for {
 		local := count.Load()
-		overall := p.overallMax()
+		overall := p.omax.Load()
 		// If the local or overall limit has been reached, wait for a slot to
 		// become available. This is a simple backoff mechanism to avoid busy
 		// waiting.
@@ -168,8 +168,6 @@ func (p *BulkIndexerPool) Deregister(id string) <-chan *BulkIndexer {
 	close(c)
 	return c
 }
-
-func (p *BulkIndexerPool) overallMax() int64 { return p.omax.Load() }
 
 func (p *BulkIndexerPool) count(id string) int64 {
 	p.mu.RLock()

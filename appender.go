@@ -30,7 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"go.elastic.co/apm/module/apmzap/v2"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
@@ -82,7 +82,7 @@ type Appender struct {
 	scalingInfo atomic.Value
 
 	config                Config
-	client                esapi.Transport
+	client                elastictransport.Interface
 	pool                  *BulkIndexerPool
 	id                    string
 	bulkItems             chan BulkIndexerItem
@@ -100,7 +100,7 @@ type Appender struct {
 
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func New(client esapi.Transport, cfg Config) (*Appender, error) {
+func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	cfg = DefaultConfig(cfg)
 	if client == nil {
 		return nil, errors.New("client is nil")
@@ -351,7 +351,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 
 		// Bulk indexing may fail with different status codes.
-		var errFailed errorFlushFailed
+		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
 			var legacy *int64
 			var status string
@@ -371,13 +371,13 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		return err
 	}
-	var (
-		docsFailed, docsIndexed,
+	var docsFailed, docsIndexed,
 		// breakdown of failed docs:
 		tooManyRequests, // failed after document retries (if it applies) and final status is 429
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
-	)
+
+	failureStoreDocs := resp.FailureStoreDocs
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -445,11 +445,41 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
 		)
 	}
+	if failureStoreDocs.Used > 0 {
+		a.addCount(failureStoreDocs.Used, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusUsed)),
+			),
+		)
+	}
+	if failureStoreDocs.Failed > 0 {
+		a.addCount(failureStoreDocs.Failed, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusFailed)),
+			),
+		)
+	}
+	if failureStoreDocs.NotEnabled > 0 {
+		a.addCount(failureStoreDocs.NotEnabled, nil,
+			a.metrics.docsIndexed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
+			),
+		)
+	}
 	logger.Debug(
 		"bulk request completed",
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
+		zap.Int64("docs_failure_store_used", failureStoreDocs.Used),
+		zap.Int64("docs_failure_store_failed", failureStoreDocs.Failed),
+		zap.Int64("docs_failure_store_not_enabled", failureStoreDocs.NotEnabled),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")
