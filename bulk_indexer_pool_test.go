@@ -39,7 +39,7 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 		latency time.Duration // Latency between each get
 		draw    int           // The number of pool.Get() calls.
 	}
-	min, max := 5, 20
+	min, max := 20, 200
 	cfg := BulkIndexerConfig{}
 	require.NoError(t, cfg.Validate())
 	pool := NewBulkIndexerPool(min, max, cfg)
@@ -48,7 +48,9 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 		// allowed in the pool.
 		"fast": {latency: time.Nanosecond, draw: max},
 		// Slow will pull up to the minimum number of indexers.
-		"slow": {latency: time.Millisecond, draw: min},
+		"slow": {latency: time.Millisecond / 2, draw: min},
+		// Slower will pull up to the minimum number of indexers.
+		"slower": {latency: 5 * time.Millisecond, draw: min},
 	}
 	var wg sync.WaitGroup
 	for id, p := range parameters {
@@ -115,14 +117,37 @@ func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 		}
 	}()
 
+	var wg sync.WaitGroup
 	for i := 0; i < max*2; i++ {
+		wg.Add(1)
 		indexer := pool.Get(key)
 		require.NotNil(t, indexer)
 		go func(idx *BulkIndexer) {
 			time.AfterFunc(10*time.Millisecond, func() {
 				c <- idx
+				wg.Done()
 			})
 		}(indexer)
 	}
+	wg.Wait()
+	close(c)
+}
 
+func TestBulkIndexerPoolFailure(t *testing.T) {
+	t.Run("put empty id", func(t *testing.T) {
+		cfg := BulkIndexerConfig{}
+		require.NoError(t, cfg.Validate())
+		pool := NewBulkIndexerPool(1, 2, cfg)
+		assert.NotPanics(t, func() {
+			pool.Put("", pool.Get("test"))
+		})
+	})
+	t.Run("put nil indexer", func(t *testing.T) {
+		cfg := BulkIndexerConfig{}
+		require.NoError(t, cfg.Validate())
+		pool := NewBulkIndexerPool(1, 2, cfg)
+		assert.NotPanics(t, func() {
+			pool.Put("test", nil)
+		})
+	})
 }

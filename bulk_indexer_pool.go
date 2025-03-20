@@ -18,46 +18,50 @@
 package docappender
 
 import (
-	"math/rand/v2"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // BulkIndexerPool is a pool of BulkIndexer instances. It is designed to be
 // used in a concurrent environment where multiple goroutines may need to
 // acquire and release indexers.
 //
-// The pool allows a minimum and maximum number of indexers to be "leased"
-// for each ID. The overall number of indexers across all IDs is also tracked
-// and limited. This is useful for ensuring that the pool does not grow too
-// large, even if some IDs are not releasing indexers.
+// The pool allows a minimum number of BulkIndexers to be guaranteed per ID, and
+// maximum number of indexers to be "leased" overall. This is useful to ensure
+// the pool does not grow too large, even if some IDs are not releasing indexers.
+//
+// The overall number of leased indexers is not guaranteed to configured maximum
+// when each of the IDs is below the minimum. This guarantees minimum capacity
+// for each ID, potentially leading to a larger number of indexers overall.
 type BulkIndexerPool struct {
 	indexers chan *BulkIndexer
-	nonEmpty map[string]chan *BulkIndexer
-	counts   map[string]*atomic.Int64
+	entries  map[string]idEntry
 	mu       sync.RWMutex
-	omax     atomic.Int64
+	cond     *sync.Cond   // To wait/signal when a slot is available.
+	leased   atomic.Int64 // Total number of leased indexers across all IDs.
 
 	// Read only fields.
 	min, max int64
-	overall  int64
 	config   BulkIndexerConfig
 }
 
-// NewBulkIndexerPool returns a new BulkIndexerPool with the specified minimum
-// and maximum number of indexers per ID, and the BulkIndexerConfig to use when
-// creating new indexers.
-func NewBulkIndexerPool(min, poolMax int, config BulkIndexerConfig) *BulkIndexerPool {
+type idEntry struct {
+	nonEmpty chan *BulkIndexer
+	count    *atomic.Int64
+}
+
+// NewBulkIndexerPool returns a new BulkIndexerPool with the specified guaranteed
+// indexers per ID, the maximum number of concurrent BulkIndexers, and the
+// BulkIndexerConfig to use when creating new indexers.
+func NewBulkIndexerPool(guaranteed, max int, c BulkIndexerConfig) *BulkIndexerPool {
 	p := BulkIndexerPool{
-		indexers: make(chan *BulkIndexer, poolMax),
-		nonEmpty: make(map[string]chan *BulkIndexer),
-		counts:   make(map[string]*atomic.Int64),
-		min:      int64(min),
-		max:      int64(poolMax),
-		overall:  int64(poolMax),
-		config:   config,
+		indexers: make(chan *BulkIndexer, max),
+		entries:  make(map[string]idEntry),
+		min:      int64(guaranteed),
+		max:      int64(max),
+		config:   c,
 	}
+	p.cond = sync.NewCond(&p.mu)
 	return &p
 }
 
@@ -67,114 +71,123 @@ func NewBulkIndexerPool(min, poolMax int, config BulkIndexerConfig) *BulkIndexer
 // If the overall limit of indexers has been reached, it will wait until a slot
 // is available. This is a blocking operation.
 func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
-	p.mu.RLock()
-	count, exists := p.counts[id]
-	p.mu.RUnlock()
+	// Acquire the lock to ensure that we are not racing with other goroutines
+	// that may be trying to acquire or release indexers.
+	// Even though this looks like it would prevent other Get() operations from
+	// proceeding, the lock is only held for a short time while we check the
+	// count and overall limits. The lock is released by:
+	// - p.cond.Wait() releases the lock while waiting for a signal.
+	// - p.mu.Unlock() releases the lock after the indexer is returned.
+	p.mu.Lock()
+	entry, exists := p.entries[id]
 	if !exists {
-		p.mu.Lock()
 		defer p.mu.Unlock()
-		count, exists = p.counts[id]
+		entry, exists = p.entries[id]
 		if !exists {
-			p.nonEmpty[id] = make(chan *BulkIndexer, p.overall)
-			p.counts[id] = new(atomic.Int64)
-			p.counts[id].Add(1)
-			p.omax.Add(1)
+			entry = idEntry{
+				nonEmpty: make(chan *BulkIndexer, p.max),
+				count:    new(atomic.Int64),
+			}
+			entry.count.Add(1)
+			p.entries[id] = entry
+			p.leased.Add(1)
 			return newBulkIndexer(p.config)
 		}
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+
 	for {
-		local := count.Load()
-		overall := p.omax.Load()
 		// If the local or overall limit has been reached, wait for a slot to
 		// become available. This is a simple backoff mechanism to avoid busy
 		// waiting.
-		if local < p.min || overall < p.overall {
-			if swapped := count.CompareAndSwap(local, local+1); swapped {
-				p.omax.Add(1)
-				// First, try to return an existing non-empty indexer.
-				for i := 0; i < 3; i++ {
-					select {
-					case idx := <-p.nonEmpty[id]:
-						return idx
-					default:
-					}
-				}
-				// If there aren't any non-empty indexers, either return an
-				// existing indexer or create a new one.
+		if entry.count.Load() < p.min || p.leased.Load() < p.max {
+			entry.count.Add(1)
+			p.leased.Add(1)
+			// Unlock the mutex right after atomic counts are updated.
+			p.mu.Unlock()
+			// First, try to return an existing non-empty indexer (if any).
+			// Try a few times since the mutex is unlocked and an indexer
+			// may have been returned in the meantime.
+			for i := 0; i < 3; i++ {
 				select {
-				case idx := <-p.indexers:
+				case idx := <-entry.nonEmpty:
 					return idx
 				default:
-					return newBulkIndexer(p.config)
 				}
 			}
+			// If there aren't any non-empty indexers, either return an
+			// existing indexer or create a new one if none are available.
+			select {
+			case idx := <-p.indexers:
+				return idx
+			default:
+				return newBulkIndexer(p.config)
+			}
 		}
-		<-time.After( // Wait until retrying for a slot up to 1ms.
-			time.Duration(rand.IntN(1000)) * time.Nanosecond,
-		)
+		// Waits until a Put() is called, which will signal this condition.
+		// This allows waiting for a slot to become available without busy
+		// waiting.
+		// When Wait() is called, the mutex is unlocked while waiting.
+		// After Wait() returns, the mutex is automatically locked.
+		p.cond.Wait()
 	}
 }
 
 // Put returns the BulkIndexer to the pool. If the indexer is non-empty, it is
 // stored in the non-empty channel for the ID. Otherwise, it is returned to the
 // general pool.
+// After calling Put() no references to the indexer should be stored, since
+// doing so may lead to undefined behavior and unintended memory sharing.
 func (p *BulkIndexerPool) Put(id string, indexer *BulkIndexer) {
+	if indexer == nil {
+		return // No indexer to store, nothing to do.
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	count, exists := p.counts[id]
+	entry, exists := p.entries[id]
 	if !exists {
 		return // unknown id, discard indexer
 	}
+	defer func() { // Always decrement the count and signal the condition.
+		entry.count.Add(-1)
+		p.leased.Add(-1)
+		p.cond.Signal() // Signal waiting goroutines
+	}()
 	if indexer.Items() > 0 {
-		p.putNonEmpty(id, indexer)
+		entry.nonEmpty <- indexer // Never discard non-empty indexers.
 		return
 	}
 	select {
-	case p.indexers <- indexer:
-	case <-time.After(time.Nanosecond):
-		// If the pool is full, discard the indexer.
-	}
-	count.Add(-1)
-	p.omax.Add(-1)
-}
-
-func (p *BulkIndexerPool) putNonEmpty(id string, indexer *BulkIndexer) {
-	c, exists := p.nonEmpty[id]
-	if !exists {
-		return // unknown id, discard indexer
-	}
-	select {
-	case c <- indexer: // Never discard non-empty indexers.
-		// Update counts.
-		count, _ := p.counts[id]
-		count.Add(-1)
-		p.omax.Add(-1)
+	case p.indexers <- indexer: // Return to the pool for later reuse.
+	default:
+		indexer = nil // If the pool is full, discard the indexer.
 	}
 }
 
 // Deregister removes the id from the pool and returns a closed BulkIndexer
 // channel with all the non-empty indexers associated with the ID.
 func (p *BulkIndexerPool) Deregister(id string) <-chan *BulkIndexer {
+	if id == "" {
+		return nil // No ID to deregister.
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.counts, id)
-	c, ok := p.nonEmpty[id]
-	delete(p.nonEmpty, id)
-	if !ok {
-		c = make(chan *BulkIndexer)
+	entry, ok := p.entries[id]
+	if !ok { // To handle when the ID is not found.
+		entry.nonEmpty = make(chan *BulkIndexer)
 	}
-	close(c)
-	return c
+	delete(p.entries, id)
+	close(entry.nonEmpty)
+	return entry.nonEmpty
 }
 
 func (p *BulkIndexerPool) count(id string) int64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	count, exists := p.counts[id]
-	if !exists {
+	if id == "" {
 		return -1
 	}
-	return count.Load()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if entry, exists := p.entries[id]; exists {
+		return entry.count.Load()
+	}
+	return -1
 }
