@@ -162,6 +162,7 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 			CompressionLevel:      cfg.CompressionLevel,
 			Pipeline:              cfg.Pipeline,
 			RequireDataStream:     cfg.RequireDataStream,
+			IncludeSourceOnError:  cfg.IncludeSourceOnError,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
@@ -389,7 +390,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 
 		// Bulk indexing may fail with different status codes.
-		var errFailed errorFlushFailed
+		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
 			var legacy *int64
 			var status string
