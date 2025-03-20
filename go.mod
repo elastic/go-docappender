@@ -1,7 +1,6 @@
 module github.com/elastic/go-docappender/v2
 
-go 1.22.0
-toolchain go1.23.7
+go 1.24
 
 require (
 	github.com/elastic/elastic-transport-go/v8 v8.6.1
