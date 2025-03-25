@@ -19,11 +19,11 @@ package docappender
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"runtime"
 	"sync"
@@ -132,7 +132,7 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		pool:      cfg.BulkIndexerPool,
 		config:    cfg,
 		client:    client,
-		id:        rand.Text(),
+		id:        randStringBytes(32),
 		closed:    make(chan struct{}),
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
@@ -826,4 +826,16 @@ func timeFunc(f func()) time.Duration {
 		f()
 	}
 	return time.Since(t0)
+}
+
+const alphanum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// NOTE(marclop) until requiring 1.24.0 is possible, then we can switch to
+// rand.Text() from the `crypto/rand` package.
+func randStringBytes(length int) string {
+	buf := make([]byte, length)
+	for i := range buf {
+		buf[i] = alphanum[rand.Intn(len(alphanum))]
+	}
+	return string(buf)
 }
