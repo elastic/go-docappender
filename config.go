@@ -190,7 +190,7 @@ func DefaultConfig(cfg Config) Config {
 	}
 	if cfg.BulkIndexerPool == nil {
 		cfg.BulkIndexerPool = NewBulkIndexerPool(
-			cfg.MaxRequests, cfg.MaxRequests,
+			cfg.MaxRequests, cfg.MaxRequests, cfg.MaxRequests,
 			BulkIndexerConfigFrom(cfg),
 		)
 	}

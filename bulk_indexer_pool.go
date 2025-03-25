@@ -41,8 +41,8 @@ type BulkIndexerPool struct {
 	leased   atomic.Int64 // Total number of leased indexers across all IDs.
 
 	// Read only fields.
-	min, max int64
-	config   BulkIndexerConfig
+	min, max, total int64
+	config          BulkIndexerConfig
 }
 
 type idEntry struct {
@@ -50,15 +50,18 @@ type idEntry struct {
 	count    *atomic.Int64
 }
 
-// NewBulkIndexerPool returns a new BulkIndexerPool with the specified guaranteed
-// indexers per ID, the maximum number of concurrent BulkIndexers, and the
-// BulkIndexerConfig to use when creating new indexers.
-func NewBulkIndexerPool(guaranteed, max int, c BulkIndexerConfig) *BulkIndexerPool {
+// NewBulkIndexerPool returns a new BulkIndexerPool with:
+// - The specified guaranteed indexers per ID
+// - The maximum number of concurrent BulkIndexers per ID
+// - A total (max) number of indexers to be leased per pool.
+// - The BulkIndexerConfig to use when creating new indexers.
+func NewBulkIndexerPool(guaranteed, max, total int, c BulkIndexerConfig) *BulkIndexerPool {
 	p := BulkIndexerPool{
-		indexers: make(chan *BulkIndexer, max),
+		indexers: make(chan *BulkIndexer, total),
 		entries:  make(map[string]idEntry),
 		min:      int64(guaranteed),
 		max:      int64(max),
+		total:    int64(total),
 		config:   c,
 	}
 	p.cond = sync.NewCond(&p.mu)
@@ -96,32 +99,19 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 	}
 
 	for {
-		// If the local or overall limit has been reached, wait for a slot to
-		// become available. This is a simple backoff mechanism to avoid busy
-		// waiting.
-		if entry.count.Load() < p.min || p.leased.Load() < p.max {
-			entry.count.Add(1)
-			p.leased.Add(1)
-			// Unlock the mutex right after atomic counts are updated.
-			p.mu.Unlock()
-			// First, try to return an existing non-empty indexer (if any).
-			// Try a few times since the mutex is unlocked and an indexer
-			// may have been returned in the meantime.
-			for i := 0; i < 3; i++ {
-				select {
-				case idx := <-entry.nonEmpty:
-					return idx
-				default:
-				}
-			}
-			// If there aren't any non-empty indexers, either return an
-			// existing indexer or create a new one if none are available.
-			select {
-			case idx := <-p.indexers:
-				return idx
-			default:
-				return newBulkIndexer(p.config)
-			}
+		// Always allow minimum indexers to be dispensed, regardless of the
+		// overall limit. This ensures that the minimum number of indexers
+		// are always available for each ID.
+		underGuaranteed := entry.count.Load() < p.min
+		if underGuaranteed {
+			return p.get(entry)
+		}
+		// Only allow indexers to be dispensed if both the local and overall
+		// limits have not been reached.
+		underLocalMax := entry.count.Load() < p.max
+		underTotal := p.leased.Load() < p.total
+		if underTotal && underLocalMax {
+			return p.get(entry)
 		}
 		// Waits until a Put() is called, which will signal this condition.
 		// This allows waiting for a slot to become available without busy
@@ -129,6 +119,35 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 		// When Wait() is called, the mutex is unlocked while waiting.
 		// After Wait() returns, the mutex is automatically locked.
 		p.cond.Wait()
+	}
+}
+
+// get returns a BulkIndexer for the specified ID. It is assumed that the
+// caller has already acquired the lock and checked the count and overall
+// limits. This function is called by Get() when the ID is already registered
+// and the overall limits have not been reached.
+func (p *BulkIndexerPool) get(entry idEntry) *BulkIndexer {
+	entry.count.Add(1)
+	p.leased.Add(1)
+	// Unlock the mutex right after atomic counts are updated.
+	p.mu.Unlock()
+	// First, try to return an existing non-empty indexer (if any). Try a few
+	// times since the mutex is unlocked and an indexer may have been returned
+	// in the meantime.
+	for i := 0; i < 3; i++ {
+		select {
+		case idx := <-entry.nonEmpty:
+			return idx
+		default:
+		}
+	}
+	// If there aren't any non-empty indexers, either return an
+	// existing indexer or create a new one if none are available.
+	select {
+	case idx := <-p.indexers:
+		return idx
+	default:
+		return newBulkIndexer(p.config)
 	}
 }
 
