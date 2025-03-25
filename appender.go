@@ -137,9 +137,6 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
-	// NOTE(marclop): This implementation kind of breaks this rule. We need to
-	// find a way to make this work well, or we could issue a new major release
-	// with non-BWC changes.
 	indexer.addUpDownCount(int64(cfg.MaxRequests), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking

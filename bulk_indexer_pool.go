@@ -26,13 +26,10 @@ import (
 // used in a concurrent environment where multiple goroutines may need to
 // acquire and release indexers.
 //
-// The pool allows a minimum number of BulkIndexers to be guaranteed per ID, and
-// maximum number of indexers to be "leased" overall. This is useful to ensure
-// the pool does not grow too large, even if some IDs are not releasing indexers.
-//
-// The overall number of leased indexers is not guaranteed to configured maximum
-// when each of the IDs is below the minimum. This guarantees minimum capacity
-// for each ID, potentially leading to a larger number of indexers overall.
+// The pool allows a minimum number of BulkIndexers to be guaranteed per ID, a
+// maximum number of indexers per ID and an overall lease limit. This is useful
+// to ensure the pool does not grow too large, even if some IDs are slow to
+// release indexers.
 type BulkIndexerPool struct {
 	indexers chan *BulkIndexer
 	entries  map[string]idEntry
