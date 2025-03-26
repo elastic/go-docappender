@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"net/http"
 	"runtime"
 	"sync"
@@ -101,7 +100,7 @@ type Appender struct {
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
-	cfg = DefaultConfig(cfg)
+	cfg = DefaultConfig(client, cfg)
 	if client == nil {
 		return nil, errors.New("client is nil")
 	}
@@ -125,18 +124,19 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := BulkIndexerConfigFrom(cfg).Validate(); err != nil {
+	if err := BulkIndexerConfigFrom(client, cfg).Validate(); err != nil {
 		return nil, fmt.Errorf("error creating bulk indexer: %w", err)
 	}
 	indexer := &Appender{
 		pool:      cfg.BulkIndexerPool,
 		config:    cfg,
 		client:    client,
-		id:        randStringBytes(32),
 		closed:    make(chan struct{}),
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
+	// Use the Appender's pointer as the unique ID for the BulkIndexerPool.
+	indexer.id = fmt.Sprintf("%p", indexer)
 	indexer.addUpDownCount(int64(cfg.MaxRequests), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
@@ -317,7 +317,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		flushCtx = ctx
 	}
 
-	resp, err := bulkIndexer.Flush(flushCtx, a.client)
+	resp, err := bulkIndexer.Flush(flushCtx)
 
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
@@ -505,6 +505,9 @@ func (a *Appender) runActiveIndexer() {
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
 			active = a.pool.Get(a.id)
+			// The BulkIndexer may have been used by another appender, we need
+			// to reset it to ensure we're using the right client.
+			active.ResetClient(a.client)
 
 			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 			a.addUpDownCount(1, nil, a.metrics.concurrentBulkrequests)
@@ -826,16 +829,4 @@ func timeFunc(f func()) time.Duration {
 		f()
 	}
 	return time.Since(t0)
-}
-
-const alphanum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-// NOTE(marclop) until requiring 1.24.0 is possible, then we can switch to
-// rand.Text() from the `crypto/rand` package.
-func randStringBytes(length int) string {
-	buf := make([]byte, length)
-	for i := range buf {
-		buf[i] = alphanum[rand.Intn(len(alphanum))]
-	}
-	return string(buf)
 }

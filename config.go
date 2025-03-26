@@ -18,8 +18,11 @@
 package docappender
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -76,6 +79,14 @@ type Config struct {
 	// If MaxRequests is less than or equal to zero, the default of 10 will be used.
 	MaxRequests int
 
+	// BulkIndexerPool holds an optional pool that is used for creating new BulkIndexers.
+	// If not set/nil, a new BulkIndexerPool will be created with MaxRequests as the
+	// guaranteed, local and total maximum number of indexers.
+	//
+	// A BulkIndexerPool may be shared between multiple Appender instances. Each has its
+	// own unique ID to guarantee per Appender limits.
+	//
+	// For more information, see [NewBulkIndexerPool].
 	BulkIndexerPool *BulkIndexerPool
 
 	// MaxDocumentRetries holds the maximum number of document retries
@@ -152,7 +163,7 @@ type Config struct {
 
 // DefaultConfig returns a copy of cfg with any zero values set to their
 // default values.
-func DefaultConfig(cfg Config) Config {
+func DefaultConfig(cl elastictransport.Interface, cfg Config) Config {
 	if cfg.MaxRequests <= 0 {
 		cfg.MaxRequests = 10
 	}
@@ -191,7 +202,7 @@ func DefaultConfig(cfg Config) Config {
 	if cfg.BulkIndexerPool == nil {
 		cfg.BulkIndexerPool = NewBulkIndexerPool(
 			cfg.MaxRequests, cfg.MaxRequests, cfg.MaxRequests,
-			BulkIndexerConfigFrom(cfg),
+			BulkIndexerConfigFrom(cl, cfg),
 		)
 	}
 	return cfg
@@ -260,10 +271,70 @@ type ScaleActionConfig struct {
 	CoolDown time.Duration
 }
 
+// BulkIndexerConfig holds configuration for BulkIndexer.
+type BulkIndexerConfig struct {
+	// Client holds the Elasticsearch client.
+	Client elastictransport.Interface
+
+	// MaxDocumentRetries holds the maximum number of document retries
+	MaxDocumentRetries int
+
+	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
+	//
+	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
+	RetryOnDocumentStatus []int
+
+	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
+	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
+	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
+	// default compression level.
+	CompressionLevel int
+
+	// Pipeline holds the ingest pipeline ID.
+	//
+	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
+	Pipeline string
+
+	// RequireDataStream, If set to true, an index will be created only if a
+	// matching index template is found and it contains a data stream template.
+	// When true, `require_data_stream=true` is set in the bulk request.
+	// When false or not set, `require_data_stream` is not set in the bulk request.
+	// Which could cause a classic index to be created if no data stream template
+	// matches the index in the request.
+	//
+	// RequireDataStream is disabled by default.
+	RequireDataStream bool
+
+	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
+	// might contain the part of source document on error.
+	// If Unset the error reason will be dropped.
+	// Requires Elasticsearch 8.18+ if value is True or False.
+	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
+	// sensitive data.
+	//
+	// IncludeSourceOnError is Unset by default
+	IncludeSourceOnError Value
+}
+
+// Validate checks the configuration for errors.
+func (cfg BulkIndexerConfig) Validate() error {
+	var errs []error
+	if cfg.Client == nil {
+		errs = append(errs, fmt.Errorf("bulk_indexer: client is required"))
+	}
+	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
+		errs = append(errs, fmt.Errorf("expected CompressionLevel in range [-1,9], got %d",
+			cfg.CompressionLevel,
+		))
+	}
+	return errors.Join(errs...)
+}
+
 // BulkIndexerConfigFrom creates a BulkIndexerConfig from the provided Config,
 // with additional information included as necessary.
-func BulkIndexerConfigFrom(cfg Config) BulkIndexerConfig {
+func BulkIndexerConfigFrom(cl elastictransport.Interface, cfg Config) BulkIndexerConfig {
 	return BulkIndexerConfig{
+		Client:                cl,
 		MaxDocumentRetries:    cfg.MaxDocumentRetries,
 		RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
 		CompressionLevel:      cfg.CompressionLevel,

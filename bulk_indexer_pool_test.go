@@ -18,12 +18,15 @@
 package docappender
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/elastic/go-docappender/v2/docappendertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +43,15 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 		latency time.Duration // Latency between each get
 		draw    int           // The number of pool.Get() calls.
 	}
-	cfg := BulkIndexerConfig{}
+	var mu sync.Mutex
+	uniques := map[string]struct{}{}
+	cfg := BulkIndexerConfig{
+		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {
+			mu.Lock()
+			uniques["invalid"] = struct{}{}
+			mu.Unlock()
+		}),
+	}
 	require.NoError(t, cfg.Validate())
 	test := func(t testing.TB, guaranteed, localMax, total int) {
 		pool := NewBulkIndexerPool(guaranteed, localMax, total, cfg)
@@ -61,7 +72,17 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 				for i := 0; i < p.draw; i++ {
 					t.Log("start", id, pool.count(id))
 					indexer := pool.Get(id)
+					indexer.ResetClient(docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {
+						mu.Lock()
+						defer mu.Unlock()
+						uniques[fmt.Sprint(id)] = struct{}{}
+					}))
 					require.NotNil(t, indexer)
+					indexer.Add(BulkIndexerItem{
+						Index: "test",
+						Body:  strings.NewReader(`{"foo":"bar"}`),
+					})
+					indexer.Flush(context.Background())
 					time.Sleep(p.latency)
 					defer func(indexer *BulkIndexer) {
 						pool.Put(id, indexer)
@@ -102,6 +123,11 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 			count++
 		}
 		assert.Equal(t, 1, count)
+		// Ensure that the indexer client is always reset.
+		assert.NotContains(t, uniques, "invalid")
+		for id := range parameters {
+			assert.Contains(t, uniques, id)
+		}
 	}
 
 	tc := []struct {
@@ -123,7 +149,9 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 }
 
 func TestBulkIndexerPoolCorrectness(t *testing.T) {
-	cfg := BulkIndexerConfig{}
+	cfg := BulkIndexerConfig{
+		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {}),
+	}
 	require.NoError(t, cfg.Validate())
 	guaranteed := 5
 	localMax := 10
@@ -188,7 +216,9 @@ func TestBulkIndexerPoolCorrectness(t *testing.T) {
 
 func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 	guaranteed, max := 1, 2
-	cfg := BulkIndexerConfig{}
+	cfg := BulkIndexerConfig{
+		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {}),
+	}
 	require.NoError(t, cfg.Validate())
 
 	pool := NewBulkIndexerPool(guaranteed, max, max, cfg)
@@ -217,8 +247,10 @@ func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 }
 
 func TestBulkIndexerPoolFailure(t *testing.T) {
+	cfg := BulkIndexerConfig{
+		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {}),
+	}
 	t.Run("put empty id", func(t *testing.T) {
-		cfg := BulkIndexerConfig{}
 		require.NoError(t, cfg.Validate())
 		pool := NewBulkIndexerPool(1, 2, 2, cfg)
 		assert.NotPanics(t, func() {
@@ -226,7 +258,6 @@ func TestBulkIndexerPoolFailure(t *testing.T) {
 		})
 	})
 	t.Run("put nil indexer", func(t *testing.T) {
-		cfg := BulkIndexerConfig{}
 		require.NoError(t, cfg.Validate())
 		pool := NewBulkIndexerPool(1, 2, 2, cfg)
 		assert.NotPanics(t, func() {

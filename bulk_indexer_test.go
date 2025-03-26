@@ -63,6 +63,7 @@ func TestBulkIndexer(t *testing.T) {
 				json.NewEncoder(w).Encode(result)
 			})
 			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:                client,
 				MaxDocumentRetries:    100_000, // infinite for testing purpose
 				RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
 				CompressionLevel:      tc.CompressionLevel,
@@ -86,7 +87,7 @@ func TestBulkIndexer(t *testing.T) {
 			// All items should be successfully flushed
 			uncompressed := indexer.UncompressedLen()
 			uncompressedDocSize := uncompressed / itemCount
-			stat, err := indexer.Flush(context.Background(), client)
+			stat, err := indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
 			require.Equal(t, uncompressed, indexer.BytesUncompressedFlushed())
@@ -101,7 +102,7 @@ func TestBulkIndexer(t *testing.T) {
 			require.Equal(t, itemCount, indexer.Items())
 
 			for i := 0; i < 10; i++ {
-				stat, err := indexer.Flush(context.Background(), client)
+				stat, err := indexer.Flush(context.Background())
 				require.NoError(t, err)
 				require.Equal(t, int64(0), stat.Indexed)
 				require.Len(t, stat.FailedDocs, 0)
@@ -120,7 +121,7 @@ func TestBulkIndexer(t *testing.T) {
 			uncompressedSize := indexer.UncompressedLen()
 			// Recover ES and ensure all items are indexed
 			esFailing.Store(false)
-			stat, err = indexer.Flush(context.Background(), client)
+			stat, err = indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(itemCount), stat.Indexed)
 			require.Equal(t, uncompressedSize, indexer.BytesUncompressedFlushed())
@@ -140,7 +141,9 @@ func TestDynamicTemplates(t *testing.T) {
 		}, dynamicTemplates)
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
 	require.NoError(t, err)
 
 	err = indexer.Add(docappender.BulkIndexerItem{
@@ -161,7 +164,7 @@ func TestDynamicTemplates(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stat, err := indexer.Flush(context.Background(), client)
+	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
@@ -176,7 +179,9 @@ func TestPipeline(t *testing.T) {
 		}
 		require.Equal(t, 2, len(pipelines), "2 pipelines should have been returned")
 	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
 	require.NoError(t, err)
 
 	err = indexer.Add(docappender.BulkIndexerItem{
@@ -197,7 +202,7 @@ func TestPipeline(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stat, err := indexer.Flush(context.Background(), client)
+	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
@@ -217,7 +222,9 @@ func TestAction(t *testing.T) {
 
 		require.Equal(t, []string{"create", "update", "delete"}, actions)
 	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
 	require.NoError(t, err)
 
 	err = indexer.Add(docappender.BulkIndexerItem{
@@ -257,7 +264,7 @@ func TestAction(t *testing.T) {
 	})
 	assert.Error(t, err)
 
-	stat, err := indexer.Flush(context.Background(), client)
+	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(3), stat.Indexed)
 }
@@ -270,7 +277,9 @@ func TestItemRequireDataStream(t *testing.T) {
 		assert.True(t, meta[1].RequireDataStream)
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
 	require.NoError(t, err)
 
 	for _, required := range []bool{false, true} {
@@ -282,7 +291,7 @@ func TestItemRequireDataStream(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	stat, err := indexer.Flush(context.Background(), client)
+	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stat.Indexed)
 }
@@ -310,7 +319,9 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 		err := json.NewEncoder(w).Encode(result)
 		require.NoError(t, err)
 	})
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
 	require.NoError(t, err)
 
 	for range 4 {
@@ -323,7 +334,7 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	stat, err := indexer.Flush(context.Background(), client)
+	stat, err := indexer.Flush(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(4), stat.Indexed)
 	require.Equal(t, int64(1), stat.FailureStoreDocs.Used)

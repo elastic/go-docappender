@@ -79,9 +79,9 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 	// - p.cond.Wait() releases the lock while waiting for a signal.
 	// - p.mu.Unlock() releases the lock after the indexer is returned.
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	entry, exists := p.entries[id]
 	if !exists {
-		defer p.mu.Unlock()
 		entry, exists = p.entries[id]
 		if !exists {
 			entry = idEntry{
@@ -126,8 +126,6 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 func (p *BulkIndexerPool) get(entry idEntry) *BulkIndexer {
 	entry.count.Add(1)
 	p.leased.Add(1)
-	// Unlock the mutex right after atomic counts are updated.
-	p.mu.Unlock()
 	// First, try to return an existing non-empty indexer (if any). Try a few
 	// times since the mutex is unlocked and an indexer may have been returned
 	// in the meantime.

@@ -57,57 +57,6 @@ const (
 	ActionUpdate = "update"
 )
 
-// BulkIndexerConfig holds configuration for BulkIndexer.
-type BulkIndexerConfig struct {
-	// MaxDocumentRetries holds the maximum number of document retries
-	MaxDocumentRetries int
-
-	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
-	//
-	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
-	RetryOnDocumentStatus []int
-
-	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
-	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
-	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
-	// default compression level.
-	CompressionLevel int
-
-	// Pipeline holds the ingest pipeline ID.
-	//
-	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
-	Pipeline string
-
-	// RequireDataStream, If set to true, an index will be created only if a
-	// matching index template is found and it contains a data stream template.
-	// When true, `require_data_stream=true` is set in the bulk request.
-	// When false or not set, `require_data_stream` is not set in the bulk request.
-	// Which could cause a classic index to be created if no data stream template
-	// matches the index in the request.
-	//
-	// RequireDataStream is disabled by default.
-	RequireDataStream bool
-
-	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
-	// might contain the part of source document on error.
-	// If Unset the error reason will be dropped.
-	// Requires Elasticsearch 8.18+ if value is True or False.
-	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
-	// sensitive data.
-	//
-	// IncludeSourceOnError is Unset by default
-	IncludeSourceOnError Value
-}
-
-func (cfg BulkIndexerConfig) Validate() error {
-	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
-		return fmt.Errorf("expected CompressionLevel in range [-1,9], got %d",
-			cfg.CompressionLevel,
-		)
-	}
-	return nil
-}
-
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
 type BulkIndexer struct {
@@ -287,6 +236,11 @@ func (b *BulkIndexer) Reset() {
 	b.bytesUncompFlushed = 0
 }
 
+// ResetClient resets the client used by the bulk indexer.
+func (b *BulkIndexer) ResetClient(client elastictransport.Interface) {
+	b.config.Client = client
+}
+
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
@@ -462,7 +416,7 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
-func (b *BulkIndexer) Flush(ctx context.Context, client elastictransport.Interface) (BulkIndexerResponseStat, error) {
+func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
 		return BulkIndexerResponseStat{}, nil
 	}
@@ -493,7 +447,7 @@ func (b *BulkIndexer) Flush(ctx context.Context, client elastictransport.Interfa
 
 	bytesFlushed := b.buf.Len()
 	bytesUncompFlushed := b.writer.bytesWritten
-	res, err := client.Perform(req)
+	res, err := b.config.Client.Perform(req)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
