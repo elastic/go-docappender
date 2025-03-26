@@ -69,9 +69,10 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 			wg.Add(1)
 			go func(id string, p testCfg) {
 				defer wg.Done()
+				pool.Register(id)
 				for i := 0; i < p.draw; i++ {
 					t.Log("start", id, pool.count(id))
-					indexer := pool.Get(id)
+					indexer, _ := pool.Get(context.Background(), id)
 					indexer.ResetClient(docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {
 						mu.Lock()
 						defer mu.Unlock()
@@ -103,17 +104,18 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 		// This next test ensures that if one of the returned indexers is returned
 		// to the pool, it is returned before a new indexer is created / returned.
 		key := "slow"
-		bi := pool.Get(key)
+		pool.Register(key)
+		bi, _ := pool.Get(context.Background(), key)
 		bi.Add(BulkIndexerItem{
 			Index: "test",
 			Body:  strings.NewReader(`{"foo":"bar"}`),
 		})
 		prevBI := bi
-		pool.Put(key, bi)              // Return to pool.
-		bi = pool.Get(key)             // Get the same indexer.
-		assert.Equal(t, 1, bi.Items()) // Assert it still has the item.
-		assert.Equal(t, prevBI, bi)    // Assert its the exact same indexer.
-		pool.Put(key, bi)              // Return to pool.
+		pool.Put(key, bi)                           // Return to pool.
+		bi, _ = pool.Get(context.Background(), key) // Get the same indexer.
+		assert.Equal(t, 1, bi.Items())              // Assert it still has the item.
+		assert.Equal(t, prevBI, bi)                 // Assert its the exact same indexer.
+		pool.Put(key, bi)                           // Return to pool.
 
 		biC := pool.Deregister(key)
 		assert.NotNil(t, biC)
@@ -160,9 +162,11 @@ func TestBulkIndexerPoolCorrectness(t *testing.T) {
 
 	// Test that the local max is respected
 	maxOutKey := "test"
+	pool.Register(maxOutKey)
 	indexers := make(chan *BulkIndexer, localMax)
 	for i := 0; i < localMax; i++ {
-		indexer := pool.Get(maxOutKey)
+		indexer, err := pool.Get(context.Background(), maxOutKey)
+		require.NoError(t, err)
 		require.NotNil(t, indexer)
 		indexers <- indexer
 	}
@@ -172,8 +176,10 @@ func TestBulkIndexerPoolCorrectness(t *testing.T) {
 	assert.Equal(t, int64(localMax), pool.count(maxOutKey))
 
 	// Ensure other IDs can draw from the pool
+	pool.Register("another_test")
 	for i := 0; i < localMax; i++ {
-		indexer := pool.Get("another_test")
+		indexer, err := pool.Get(context.Background(), "another_test")
+		require.NoError(t, err)
 		require.NotNil(t, indexer)
 	}
 
@@ -188,7 +194,8 @@ func TestBulkIndexerPoolCorrectness(t *testing.T) {
 		// that the pool is empty and we block until one is returned.
 		for i := 0; i < localMax; i++ {
 			once.Do(func() { close(started) })
-			indexer := pool.Get(maxOutKey)
+			indexer, err := pool.Get(context.Background(), maxOutKey)
+			require.NoError(t, err)
 			require.NotNil(t, indexer)
 		}
 	}()
@@ -223,6 +230,7 @@ func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 
 	pool := NewBulkIndexerPool(guaranteed, max, max, cfg)
 	key := "test"
+	pool.Register(key)
 	c := make(chan *BulkIndexer)
 	go func() {
 		for idx := range c {
@@ -233,7 +241,8 @@ func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < max*2; i++ {
 		wg.Add(1)
-		indexer := pool.Get(key)
+		indexer, err := pool.Get(context.Background(), key)
+		require.NoError(t, err)
 		require.NotNil(t, indexer)
 		go func(idx *BulkIndexer) {
 			time.AfterFunc(10*time.Millisecond, func() {
@@ -244,6 +253,7 @@ func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {
 	}
 	wg.Wait()
 	close(c)
+	pool.Deregister(key)
 }
 
 func TestBulkIndexerPoolFailure(t *testing.T) {
@@ -254,7 +264,9 @@ func TestBulkIndexerPoolFailure(t *testing.T) {
 		require.NoError(t, cfg.Validate())
 		pool := NewBulkIndexerPool(1, 2, 2, cfg)
 		assert.NotPanics(t, func() {
-			pool.Put("", pool.Get("test"))
+			indexer, err := pool.Get(context.Background(), "test")
+			assert.Error(t, err)
+			pool.Put("", indexer)
 		})
 	})
 	t.Run("put nil indexer", func(t *testing.T) {

@@ -136,7 +136,9 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		metrics:   ms,
 	}
 	// Use the Appender's pointer as the unique ID for the BulkIndexerPool.
+	// Register the Appender ID in the pool.
 	indexer.id = fmt.Sprintf("%p", indexer)
+	indexer.pool.Register(indexer.id)
 	indexer.addUpDownCount(int64(cfg.MaxRequests), &indexer.availableBulkRequests, ms.availableBulkRequests)
 
 	// We create a cancellable context for the errgroup.Group for unblocking
@@ -173,7 +175,7 @@ func (a *Appender) Close(ctx context.Context) error {
 	}
 	close(a.closed)
 
-	// Cancel ongoing flushes when ctx is cancelled.
+	// Cancel ongoing flushes/pool.Get() when ctx is cancelled.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -504,7 +506,15 @@ func (a *Appender) runActiveIndexer() {
 			// NOTE(marclop) Record the TS when the first document is cached.
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
-			active = a.pool.Get(a.id)
+			// Return early when the Close() context expires before get returns
+			// an indexer. This could happen when all available bulk_requests
+			// are in flight & no new BulkIndexers can be pulled from the pool.
+			var err error
+			active, err = a.pool.Get(a.errgroupContext, a.id)
+			if err != nil {
+				a.config.Logger.Warn("failed to get bulk indexer from pool", zap.Error(err))
+				return
+			}
 			// The BulkIndexer may have been used by another appender, we need
 			// to reset it to ensure we're using the right client.
 			active.ResetClient(a.client)

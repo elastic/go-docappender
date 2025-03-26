@@ -18,6 +18,8 @@
 package docappender
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 )
@@ -44,7 +46,7 @@ type BulkIndexerPool struct {
 
 type idEntry struct {
 	nonEmpty chan *BulkIndexer
-	count    *atomic.Int64
+	leased   *atomic.Int64
 }
 
 // NewBulkIndexerPool returns a new BulkIndexerPool with:
@@ -70,7 +72,7 @@ func NewBulkIndexerPool(guaranteed, max, total int, c BulkIndexerConfig) *BulkIn
 //
 // If the overall limit of indexers has been reached, it will wait until a slot
 // is available. This is a blocking operation.
-func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
+func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, error) {
 	// Acquire the lock to ensure that we are not racing with other goroutines
 	// that may be trying to acquire or release indexers.
 	// Even though this looks like it would prevent other Get() operations from
@@ -82,40 +84,34 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 	defer p.mu.Unlock()
 	entry, exists := p.entries[id]
 	if !exists {
-		entry, exists = p.entries[id]
-		if !exists {
-			entry = idEntry{
-				nonEmpty: make(chan *BulkIndexer, p.max),
-				count:    new(atomic.Int64),
-			}
-			entry.count.Add(1)
-			p.entries[id] = entry
-			p.leased.Add(1)
-			return newBulkIndexer(p.config)
-		}
+		return nil, errors.New("bulk_indexer_pool: ID not found")
 	}
-
 	for {
-		// Always allow minimum indexers to be dispensed, regardless of the
+		// Always allow minimum indexers to be leased, regardless of the
 		// overall limit. This ensures that the minimum number of indexers
 		// are always available for each ID.
-		underGuaranteed := entry.count.Load() < p.min
+		underGuaranteed := entry.leased.Load() < p.min
 		if underGuaranteed {
-			return p.get(entry)
+			return p.get(ctx, entry)
 		}
-		// Only allow indexers to be dispensed if both the local and overall
+		// Only allow indexers to be leased if both the local and overall
 		// limits have not been reached.
-		underLocalMax := entry.count.Load() < p.max
+		underLocalMax := entry.leased.Load() < p.max
 		underTotal := p.leased.Load() < p.total
 		if underTotal && underLocalMax {
-			return p.get(entry)
+			return p.get(ctx, entry)
 		}
-		// Waits until a Put() is called, which will signal this condition.
-		// This allows waiting for a slot to become available without busy
-		// waiting.
+		// Waits until Put/Deregister is called. This allows waiting for a
+		// slot to become available without busy waiting.
 		// When Wait() is called, the mutex is unlocked while waiting.
 		// After Wait() returns, the mutex is automatically locked.
 		p.cond.Wait()
+
+		// Ensure that the ID is still registered before looping again.
+		if _, ok := p.entries[id]; !ok {
+			// The ID has been deregistered, return a nil indexer.
+			return nil, errors.New("bulk_indexer_pool: ID not found")
+		}
 	}
 }
 
@@ -123,27 +119,32 @@ func (p *BulkIndexerPool) Get(id string) *BulkIndexer {
 // caller has already acquired the lock and checked the count and overall
 // limits. This function is called by Get() when the ID is already registered
 // and the overall limits have not been reached.
-func (p *BulkIndexerPool) get(entry idEntry) *BulkIndexer {
-	entry.count.Add(1)
-	p.leased.Add(1)
-	// First, try to return an existing non-empty indexer (if any). Try a few
-	// times since the mutex is unlocked and an indexer may have been returned
-	// in the meantime.
-	for i := 0; i < 3; i++ {
-		select {
-		case idx := <-entry.nonEmpty:
-			return idx
-		default:
+func (p *BulkIndexerPool) get(ctx context.Context, entry idEntry) (
+	idx *BulkIndexer, err error,
+) {
+	defer func() {
+		// Only increment the leased count an indexer is returned.
+		if idx != nil {
+			entry.leased.Add(1)
+			p.leased.Add(1)
 		}
+	}()
+	// First, try to return an existing non-empty indexer (if any).
+	select {
+	case idx = <-entry.nonEmpty:
+		return
+	default:
 	}
 	// If there aren't any non-empty indexers, either return an
 	// existing indexer or create a new one if none are available.
 	select {
-	case idx := <-p.indexers:
-		return idx
+	case idx = <-p.indexers:
+	case <-ctx.Done():
+		err = ctx.Err()
 	default:
-		return newBulkIndexer(p.config)
+		idx = newBulkIndexer(p.config)
 	}
+	return
 }
 
 // Put returns the BulkIndexer to the pool. If the indexer is non-empty, it is
@@ -162,7 +163,7 @@ func (p *BulkIndexerPool) Put(id string, indexer *BulkIndexer) {
 		return // unknown id, discard indexer
 	}
 	defer func() { // Always decrement the count and signal the condition.
-		entry.count.Add(-1)
+		entry.leased.Add(-1)
 		p.leased.Add(-1)
 		p.cond.Signal() // Signal waiting goroutines
 	}()
@@ -177,6 +178,24 @@ func (p *BulkIndexerPool) Put(id string, indexer *BulkIndexer) {
 	}
 }
 
+// Register adds an ID to the pool. If the ID already exists, it does nothing.
+// This is useful for ensuring that the ID is registered before any indexers
+// are acquired for it.
+func (p *BulkIndexerPool) Register(id string) {
+	if id == "" {
+		return // No ID to register.
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.entries[id]; exists {
+		return
+	}
+	p.entries[id] = idEntry{
+		nonEmpty: make(chan *BulkIndexer, p.max),
+		leased:   new(atomic.Int64),
+	}
+}
+
 // Deregister removes the id from the pool and returns a closed BulkIndexer
 // channel with all the non-empty indexers associated with the ID.
 func (p *BulkIndexerPool) Deregister(id string) <-chan *BulkIndexer {
@@ -184,7 +203,10 @@ func (p *BulkIndexerPool) Deregister(id string) <-chan *BulkIndexer {
 		return nil // No ID to deregister.
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.mu.Unlock()
+		p.cond.Broadcast() // Signal ALL waiting goroutines
+	}()
 	entry, ok := p.entries[id]
 	if !ok { // To handle when the ID is not found.
 		entry.nonEmpty = make(chan *BulkIndexer)
@@ -201,7 +223,7 @@ func (p *BulkIndexerPool) count(id string) int64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if entry, exists := p.entries[id]; exists {
-		return entry.count.Load()
+		return entry.leased.Load()
 	}
 	return -1
 }
