@@ -36,7 +36,7 @@ type metrics struct {
 	bytesTotal             metric.Int64Counter
 	bytesUncompressedTotal metric.Int64Counter
 	availableBulkRequests  metric.Int64UpDownCounter
-	concurrentBulkrequests metric.Int64UpDownCounter
+	inflightBulkrequests   metric.Int64UpDownCounter
 	activeCreated          metric.Int64Counter
 	activeDestroyed        metric.Int64Counter
 	blockedAdd             metric.Int64Counter
@@ -159,9 +159,9 @@ func newMetrics(cfg Config) (metrics, error) {
 			p:           &ms.availableBulkRequests,
 		},
 		{
-			name:        "elasticsearch.bulk_requests.concurrent",
+			name:        "elasticsearch.bulk_requests.inflight",
 			description: "The number of concurrent bulk requests being made to Elasticsearch.",
-			p:           &ms.concurrentBulkrequests,
+			p:           &ms.inflightBulkrequests,
 		},
 	}
 	for _, m := range upDownCounters {

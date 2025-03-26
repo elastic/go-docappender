@@ -219,7 +219,7 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
-		case "elasticsearch.bulk_requests.concurrent":
+		case "elasticsearch.bulk_requests.inflight":
 			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)
@@ -366,7 +366,7 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
-		case "elasticsearch.bulk_requests.concurrent":
+		case "elasticsearch.bulk_requests.inflight":
 			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)

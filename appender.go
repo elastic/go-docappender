@@ -510,7 +510,7 @@ func (a *Appender) runActiveIndexer() {
 			active.ResetClient(a.client)
 
 			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
-			a.addUpDownCount(1, nil, a.metrics.concurrentBulkrequests)
+			a.addUpDownCount(1, nil, a.metrics.inflightBulkrequests)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.Add(item); err != nil {
@@ -574,7 +574,7 @@ func (a *Appender) runActiveIndexer() {
 				indexer.Reset()
 				a.pool.Put(a.id, indexer)
 				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
-				a.addUpDownCount(-1, nil, a.metrics.concurrentBulkrequests, attrs)
+				a.addUpDownCount(-1, nil, a.metrics.inflightBulkrequests, attrs)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)
