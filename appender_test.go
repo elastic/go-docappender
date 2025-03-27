@@ -1311,7 +1311,7 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	cancel()
 	select {
 	case err := <-closed:
-		assert.ErrorIs(t, err, context.Canceled)
+		assert.EqualError(t, err, "failed to execute the request: cancelled by appender.close")
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Close to return")
 	}
