@@ -24,6 +24,9 @@ import (
 	"sync/atomic"
 )
 
+// ErrPoolUnknownID is returned when an ID is not found in the pool.
+var ErrPoolUnknownID = errors.New("bulk_indexer_pool: unknown id")
+
 // BulkIndexerPool is a pool of BulkIndexer instances. It is designed to be
 // used in a concurrent environment where multiple goroutines may need to
 // acquire and release indexers.
@@ -67,11 +70,13 @@ func NewBulkIndexerPool(guaranteed, max, total int, c BulkIndexerConfig) *BulkIn
 	return &p
 }
 
-// Get returns a BulkIndexer for the specified ID. If there aren't any existing
-// indexers for the ID, a new one is created.
+// Get returns a BulkIndexer for the specified ID as the ID is registered and
+// below the guaranteed minimum OR the local and overall limits.
 //
 // If the overall limit of indexers has been reached, it will wait until a slot
-// is available. This is a blocking operation.
+// is available, blocking execution.
+//
+// If Deregister is called while waiting, an error and nil indexer is returned.
 func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, error) {
 	// Acquire the lock to ensure that we are not racing with other goroutines
 	// that may be trying to acquire or release indexers.
@@ -84,7 +89,7 @@ func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, err
 	defer p.mu.Unlock()
 	entry, exists := p.entries[id]
 	if !exists {
-		return nil, errors.New("bulk_indexer_pool: ID not found")
+		return nil, ErrPoolUnknownID
 	}
 	for {
 		// Always allow minimum indexers to be leased, regardless of the
@@ -108,17 +113,16 @@ func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, err
 		p.cond.Wait()
 
 		// Ensure that the ID is still registered before looping again.
-		if _, ok := p.entries[id]; !ok {
+		if entry, exists = p.entries[id]; !exists {
 			// The ID has been deregistered, return a nil indexer.
-			return nil, errors.New("bulk_indexer_pool: ID not found")
+			return nil, ErrPoolUnknownID
 		}
 	}
 }
 
 // get returns a BulkIndexer for the specified ID. It is assumed that the
-// caller has already acquired the lock and checked the count and overall
-// limits. This function is called by Get() when the ID is already registered
-// and the overall limits have not been reached.
+// caller has already acquired the lock (read or write) and checked the count
+// and overall limits.
 func (p *BulkIndexerPool) get(ctx context.Context, entry idEntry) (
 	idx *BulkIndexer, err error,
 ) {
