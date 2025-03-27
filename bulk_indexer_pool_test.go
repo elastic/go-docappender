@@ -73,7 +73,7 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 				for i := 0; i < p.draw; i++ {
 					t.Log("start", id, pool.count(id))
 					indexer, _ := pool.Get(context.Background(), id)
-					indexer.ResetClient(docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {
+					indexer.SetClient(docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {
 						mu.Lock()
 						defer mu.Unlock()
 						uniques[fmt.Sprint(id)] = struct{}{}
@@ -100,31 +100,6 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 			require.Equal(t, len(c), 0, id)
 			assert.Nil(t, <-c) // Assert nil (closed).
 		}
-
-		// This next test ensures that if one of the returned indexers is returned
-		// to the pool, it is returned before a new indexer is created / returned.
-		key := "slow"
-		pool.Register(key)
-		bi, _ := pool.Get(context.Background(), key)
-		bi.Add(BulkIndexerItem{
-			Index: "test",
-			Body:  strings.NewReader(`{"foo":"bar"}`),
-		})
-		prevBI := bi
-		pool.Put(key, bi)                           // Return to pool.
-		bi, _ = pool.Get(context.Background(), key) // Get the same indexer.
-		assert.Equal(t, 1, bi.Items())              // Assert it still has the item.
-		assert.Equal(t, prevBI, bi)                 // Assert its the exact same indexer.
-		pool.Put(key, bi)                           // Return to pool.
-
-		biC := pool.Deregister(key)
-		assert.NotNil(t, biC)
-		assert.Len(t, biC, 1)
-		var count int
-		for range biC {
-			count++
-		}
-		assert.Equal(t, 1, count)
 		// Ensure that the indexer client is always reset.
 		assert.NotContains(t, uniques, "invalid")
 		for id := range parameters {
@@ -150,75 +125,106 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 	}
 }
 
-func TestBulkIndexerPoolCorrectness(t *testing.T) {
+func TestBulkIndexerPool(t *testing.T) {
 	cfg := BulkIndexerConfig{
 		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {}),
 	}
 	require.NoError(t, cfg.Validate())
-	guaranteed := 5
-	localMax := 10
-	total := 20
-	pool := NewBulkIndexerPool(guaranteed, localMax, total, cfg)
+	t.Run("NonEmptyIndexer", func(t *testing.T) {
+		// This next test ensures that if one of the returned indexers is returned
+		// to the pool, it is returned before a new indexer is created / returned.
+		guaranteed := 1
+		localMax := 2
+		total := 2
+		pool := NewBulkIndexerPool(guaranteed, localMax, total, cfg)
+		key := "slow"
+		pool.Register(key)
+		bi, _ := pool.Get(context.Background(), key)
+		bi.Add(BulkIndexerItem{
+			Index: "test",
+			Body:  strings.NewReader(`{"foo":"bar"}`),
+		})
+		prevBI := bi
+		pool.Put(key, bi)                           // Return to pool.
+		bi, _ = pool.Get(context.Background(), key) // Get the same indexer.
+		assert.Equal(t, 1, bi.Items())              // Assert it still has the item.
+		assert.Equal(t, prevBI, bi)                 // Assert its the exact same indexer.
+		pool.Put(key, bi)                           // Return to pool.
 
-	// Test that the local max is respected
-	maxOutKey := "test"
-	pool.Register(maxOutKey)
-	indexers := make(chan *BulkIndexer, localMax)
-	for i := 0; i < localMax; i++ {
-		indexer, err := pool.Get(context.Background(), maxOutKey)
-		require.NoError(t, err)
-		require.NotNil(t, indexer)
-		indexers <- indexer
-	}
+		biC := pool.Deregister(key)
+		assert.NotNil(t, biC)
+		assert.Len(t, biC, 1)
+		nonEmpty := <-biC
+		assert.Equal(t, nonEmpty.Items(), 1)
+	})
+	t.Run("LocalMax", func(t *testing.T) {
+		guaranteed := 5
+		localMax := 10
+		total := 20
+		pool := NewBulkIndexerPool(guaranteed, localMax, total, cfg)
 
-	// Ensure that the local max is respected.
-	// This should block until the indexer is returned to the pool.
-	assert.Equal(t, int64(localMax), pool.count(maxOutKey))
-
-	// Ensure other IDs can draw from the pool
-	pool.Register("another_test")
-	for i := 0; i < localMax; i++ {
-		indexer, err := pool.Get(context.Background(), "another_test")
-		require.NoError(t, err)
-		require.NotNil(t, indexer)
-	}
-
-	assert.Equal(t, int64(localMax), pool.count("another_test"))
-
-	done := make(chan struct{})
-	started := make(chan struct{})
-	go func() {
-		defer close(done)
-		var once sync.Once
-		// Try to draw more indexers with another ID. Ensure
-		// that the pool is empty and we block until one is returned.
+		// Test that the local max is respected
+		maxOutKey := "test"
+		pool.Register(maxOutKey)
+		indexers := make(chan *BulkIndexer, localMax)
 		for i := 0; i < localMax; i++ {
-			once.Do(func() { close(started) })
 			indexer, err := pool.Get(context.Background(), maxOutKey)
 			require.NoError(t, err)
 			require.NotNil(t, indexer)
+			indexers <- indexer
 		}
-	}()
-	select {
-	case <-started:
-		time.Sleep(20 * time.Millisecond) // Wait a bit.
-	case <-time.After(time.Second):
-		t.Fatal("Timed out waiting for goroutine to start")
-	}
-	// Ensure "test" key is maxed out.
-	assert.Equal(t, int64(localMax), pool.count(maxOutKey))
-	assert.Equal(t, pool.leased.Load(), int64(total))
-	// Now put the indexers back into the pool using the same key.
-	for i := 0; i < localMax; i++ {
-		pool.Put(maxOutKey, <-indexers)
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Timed out waiting for goroutine to finish")
-	}
-	assert.Equal(t, int64(localMax), pool.count(maxOutKey))
-	assert.Equal(t, pool.leased.Load(), int64(total))
+
+		// Ensure that the local max is respected.
+		assert.Equal(t, int64(localMax), pool.count(maxOutKey))
+
+		// Ensure other IDs can draw from the pool
+		pool.Register("another_test")
+		for i := 0; i < localMax; i++ {
+			indexer, err := pool.Get(context.Background(), "another_test")
+			require.NoError(t, err)
+			require.NotNil(t, indexer)
+		}
+
+		assert.Equal(t, int64(localMax), pool.count("another_test"))
+
+		done := make(chan struct{})
+		started := make(chan struct{})
+		go func() {
+			defer close(done)
+			var once sync.Once
+			// Try to draw more indexers with another ID. Ensure
+			// that the pool is empty and we block until one is returned.
+			for i := 0; i < localMax; i++ {
+				once.Do(func() { close(started) })
+				indexer, err := pool.Get(context.Background(), maxOutKey)
+				require.NoError(t, err)
+				require.NotNil(t, indexer)
+			}
+		}()
+		select {
+		case <-started:
+			// Wait a bit to ensure the goroutine has called Get(). We can't close
+			// the channel after pool.Get() because it will block until the indexer
+			// is returned.
+			time.Sleep(20 * time.Millisecond)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for goroutine to start")
+		}
+		// Ensure "test" key is maxed out.
+		assert.Equal(t, int64(localMax), pool.count(maxOutKey))
+		assert.Equal(t, int64(total), pool.leased.Load())
+		// Now put the indexers back into the pool using the same key.
+		for i := 0; i < localMax; i++ {
+			pool.Put(maxOutKey, <-indexers)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for goroutine to finish")
+		}
+		assert.Equal(t, int64(localMax), pool.count(maxOutKey))
+		assert.Equal(t, int64(total), pool.leased.Load())
+	})
 }
 
 func TestBulkIndexerPoolWaitUntilFreed(t *testing.T) {

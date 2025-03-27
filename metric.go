@@ -160,7 +160,7 @@ func newMetrics(cfg Config) (metrics, error) {
 		},
 		{
 			name:        "elasticsearch.bulk_requests.inflight",
-			description: "The number of concurrent bulk requests being made to Elasticsearch.",
+			description: "The number of in-flight bulk requests being made to Elasticsearch.",
 			p:           &ms.inflightBulkrequests,
 		},
 	}

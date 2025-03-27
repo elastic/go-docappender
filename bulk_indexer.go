@@ -236,8 +236,8 @@ func (b *BulkIndexer) Reset() {
 	b.bytesUncompFlushed = 0
 }
 
-// ResetClient resets the client used by the bulk indexer.
-func (b *BulkIndexer) ResetClient(client elastictransport.Interface) {
+// SetClient resets the client used by the bulk indexer.
+func (b *BulkIndexer) SetClient(client elastictransport.Interface) {
 	b.config.Client = client
 }
 

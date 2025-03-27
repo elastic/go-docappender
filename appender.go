@@ -517,7 +517,7 @@ func (a *Appender) runActiveIndexer() {
 			}
 			// The BulkIndexer may have been used by another appender, we need
 			// to reset it to ensure we're using the right client.
-			active.ResetClient(a.client)
+			active.SetClient(a.client)
 
 			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 			a.addUpDownCount(1, nil, a.metrics.inflightBulkrequests)
