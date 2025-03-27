@@ -97,7 +97,7 @@ func TestBulkIndexerPoolConcurrent(t *testing.T) {
 		// Now we deregister all IDs and ensure that the pool is empty.
 		for id := range parameters {
 			c := pool.Deregister(id)
-			require.Equal(t, len(c), 0, id)
+			require.Equal(t, 0, len(c), id)
 			assert.Nil(t, <-c) // Assert nil (closed).
 		}
 		// Ensure that the indexer client is always reset.

@@ -1311,7 +1311,10 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	cancel()
 	select {
 	case err := <-closed:
-		assert.EqualError(t, err, "failed to execute the request: cancelled by appender.close")
+		// Since the bulk_indexers are blocked by the Elasticsearch _bulk,
+		// The context is cancelled and it may return `context canceled` or
+		// `cancelled by appender.close`.
+		assert.ErrorContains(t, err, "failed to execute the request")
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Close to return")
 	}
