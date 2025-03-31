@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,4 +283,61 @@ func TestBulkIndexerPoolFailure(t *testing.T) {
 			pool.Put("test", nil)
 		})
 	})
+}
+
+func TestBulkIndexerNonEmpty(t *testing.T) {
+	cfg := BulkIndexerConfig{
+		Client: docappendertest.NewMockElasticsearchClient(t, func(http.ResponseWriter, *http.Request) {}),
+	}
+	max := 2
+	require.NoError(t, cfg.Validate())
+	pool := NewBulkIndexerPool(1, max, max, cfg)
+	keysMap := map[string]map[string]struct{}{
+		"test":             make(map[string]struct{}),
+		"another_test":     make(map[string]struct{}),
+		"yet_another_test": make(map[string]struct{}),
+	}
+	for key := range keysMap { // For each key, register it.
+		pool.Register(key)
+		for i := 0; i < max; i++ { // Get up to max indexers for each key.
+			// Since the BulkIndexer is returned to the pool, the item count
+			// will be ken(key) * max.
+			indexer, err := pool.Get(context.Background(), key)
+			require.NoError(t, err)
+			require.NotNil(t, indexer)
+			for i := 0; i < len(key); i++ { // Add items to the indexer.
+				indexer.Add(BulkIndexerItem{
+					Index: key,
+					Body:  strings.NewReader(`{"foo":"bar"}`),
+				})
+			}
+			// Each iteration adds len(key) items to the indexer.
+			assert.Equal(t, len(key)*(i+1), indexer.Items())
+			pool.Put(key, indexer) // Return the indexer to the pool.
+			// Record the BulkIndexer point address in the "set".
+			keysMap[key][fmt.Sprintf("%p", indexer)] = struct{}{}
+		}
+	}
+
+	// Now we deregister all IDs and ensure that the pool is empty.
+	for key := range keysMap {
+		c := pool.Deregister(key)
+		// Ensure that there is only one indexer per key.
+		require.Len(t, keysMap[key], 1)
+		for indexer := range c {
+			var called atomic.Bool
+			prev := indexer.config.Client
+			// Overwrite the client to assert the indexer is the same as the key.
+			indexer.SetClient(docappendertest.NewMockElasticsearchClient(t, func(_ http.ResponseWriter, r *http.Request) {
+				called.Store(true)
+				_, meta, _, _ := docappendertest.DecodeBulkRequestWithStatsAndMeta(r)
+				assert.Equal(t, key, meta[0].Index) // Assert the indexer is the same as the key.
+				assert.Len(t, meta, len(key)*max)   // Assert the number of items is the same as the key * max.
+			}))
+			assert.NotEqual(t, prev, indexer.config.Client) // Assert the client has been overwritten.
+			indexer.Flush(context.Background())
+			assert.Equal(t, 0, indexer.Items())
+			assert.True(t, called.Load(), "indexer client was not called")
+		}
+	}
 }
