@@ -219,6 +219,8 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.bulk_requests.inflight":
+			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)
 		}
@@ -364,6 +366,8 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.bulk_requests.inflight":
+			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)
 		}
@@ -1307,7 +1311,10 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	cancel()
 	select {
 	case err := <-closed:
-		assert.ErrorIs(t, err, context.Canceled)
+		// Since the bulk_indexers are blocked by the Elasticsearch _bulk,
+		// The context is cancelled and it may return `context canceled` or
+		// `cancelled by appender.close`.
+		assert.ErrorContains(t, err, "failed to execute the request")
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Close to return")
 	}
