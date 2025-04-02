@@ -19,13 +19,10 @@ package docappender
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
-
-// ErrPoolUnknownID is returned when an ID is not found in the pool.
-var ErrPoolUnknownID = errors.New("bulk_indexer_pool: unknown id")
 
 // BulkIndexerPool is a pool of BulkIndexer instances. It is designed to be
 // used in a concurrent environment where multiple goroutines may need to
@@ -88,10 +85,11 @@ func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for {
-		// Get the entry inside the loop in case it is deregistered mid-way.
+		// Get the entry inside the loop in case it is deregistered while
+		// waiting, or if the ID is not registered.
 		entry, exists := p.entries[id]
 		if !exists {
-			return nil, ErrPoolUnknownID
+			return nil, fmt.Errorf("bulk indexer pool: id %q not registered", id)
 		}
 		// Always allow minimum indexers to be leased, regardless of the
 		// overall limit. This ensures that the minimum number of indexers
@@ -164,7 +162,7 @@ func (p *BulkIndexerPool) Put(id string, indexer *BulkIndexer) {
 	defer func() { // Always decrement the count and signal the condition.
 		entry.leased.Add(-1)
 		p.leased.Add(-1)
-		p.cond.Signal() // Signal waiting goroutines
+		p.cond.Broadcast() // Signal waiting goroutines
 	}()
 	if indexer.Items() > 0 {
 		entry.nonEmpty <- indexer // Never discard non-empty indexers.
