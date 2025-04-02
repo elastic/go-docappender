@@ -87,11 +87,12 @@ func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, err
 	// - p.mu.Unlock() releases the lock after the indexer is returned.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	entry, exists := p.entries[id]
-	if !exists {
-		return nil, ErrPoolUnknownID
-	}
 	for {
+		// Get the entry inside the loop in case it is deregistered mid-way.
+		entry, exists := p.entries[id]
+		if !exists {
+			return nil, ErrPoolUnknownID
+		}
 		// Always allow minimum indexers to be leased, regardless of the
 		// overall limit. This ensures that the minimum number of indexers
 		// are always available for each ID.
@@ -111,12 +112,6 @@ func (p *BulkIndexerPool) Get(ctx context.Context, id string) (*BulkIndexer, err
 		// When Wait() is called, the mutex is unlocked while waiting.
 		// After Wait() returns, the mutex is automatically locked.
 		p.cond.Wait()
-
-		// Ensure that the ID is still registered before looping again.
-		if entry, exists = p.entries[id]; !exists {
-			// The ID has been deregistered, return a nil indexer.
-			return nil, ErrPoolUnknownID
-		}
 	}
 }
 
