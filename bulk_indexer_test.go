@@ -366,6 +366,7 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 			Client:                  client,
 			PopulateFailedDocsInput: enabled,
+			CompressionLevel:        compressionLevel,
 		})
 		require.NoError(t, err)
 
