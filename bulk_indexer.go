@@ -21,19 +21,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
-	"strings"
+	"strconv"
 	"unsafe"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -58,51 +57,6 @@ const (
 	ActionUpdate = "update"
 )
 
-// BulkIndexerConfig holds configuration for BulkIndexer.
-type BulkIndexerConfig struct {
-	// Client holds the Elasticsearch client.
-	Client esapi.Transport
-
-	// MaxDocumentRetries holds the maximum number of document retries
-	MaxDocumentRetries int
-
-	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
-	//
-	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
-	RetryOnDocumentStatus []int
-
-	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
-	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
-	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
-	// default compression level.
-	CompressionLevel int
-
-	// Pipeline holds the ingest pipeline ID.
-	//
-	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
-	Pipeline string
-
-	// RequireDataStream, If set to true, an index will be created only if a
-	// matching index template is found and it contains a data stream template.
-	// When true, `require_data_stream=true` is set in the bulk request.
-	// When false or not set, `require_data_stream` is not set in the bulk request.
-	// Which could cause a classic index to be created if no data stream template
-	// matches the index in the request.
-	//
-	// RequireDataStream is disabled by default.
-	RequireDataStream bool
-
-	// PopulateFailedDocsInput controls whether each BulkIndexerResponseItem.Input
-	// in BulkIndexerResponseStat.FailedDocs is populated with the input of the item,
-	// which includes the action line and the document line.
-	//
-	// WARNING: this is provided for testing and debugging only.
-	// Use with caution as it may expose sensitive data; any clients
-	// of go-docappender enabling this should relay this warning to
-	// their users. Setting this will also add memory overhead.
-	PopulateFailedDocsInput bool
-}
-
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
 type BulkIndexer struct {
@@ -124,6 +78,16 @@ type BulkIndexerResponseStat struct {
 	Indexed int64
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
+	// FailureStoreDocs contains failure store specific document stats.
+	FailureStoreDocs struct {
+		// Used contains the total number of documents indexed to failure store.
+		Used int64
+		// Failed contains the total number of documents which failed when indexed to failure store.
+		Failed int64
+		// NotEnabled contains the total number of documents which could have been indexed to failure store
+		// if it was enabled.
+		NotEnabled int64
+	}
 	// GreatestRetry contains the greatest observed retry count in the entire
 	// bulk request.
 	GreatestRetry int
@@ -146,6 +110,22 @@ type BulkIndexerResponseItem struct {
 	Input string `json:"-"`
 }
 
+// FailureStoreStatus defines enumeration type for all known failure store statuses.
+type FailureStoreStatus string
+
+const (
+	// FailureStoreStatusUnknown implicit status which represents that there is no information about
+	// this response or that the failure store is not applicable.
+	FailureStoreStatusUnknown FailureStoreStatus = "not_applicable_or_unknown"
+	// FailureStoreStatusUsed status which represents that this document was stored in the failure store successfully.
+	FailureStoreStatusUsed FailureStoreStatus = "used"
+	// FailureStoreStatusFailed status which represents that this document was rejected from the failure store.
+	FailureStoreStatusFailed FailureStoreStatus = "failed"
+	// FailureStoreStatusNotEnabled status which represents that this document was rejected, but
+	// it could have ended up in the failure store if it was enabled.
+	FailureStoreStatusNotEnabled FailureStoreStatus = "not_enabled"
+)
+
 func init() {
 	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
 		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
@@ -161,19 +141,23 @@ func init() {
 								item.Index = i.ReadString()
 							case "status":
 								item.Status = i.ReadInt()
+							case "failure_store":
+								// For the stats track only actionable explicit failure store statuses "used", "failed" and "not_enabled".
+								switch fs := i.ReadString(); FailureStoreStatus(fs) {
+								case FailureStoreStatusUsed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Used++
+								case FailureStoreStatusFailed:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Failed++
+								case FailureStoreStatusNotEnabled:
+									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.NotEnabled++
+								}
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 									switch s {
 									case "type":
 										item.Error.Type = i.ReadString()
 									case "reason":
-										reason := i.ReadString()
-										// Match Elasticsearch field mapper field value:
-										// failed to parse field [%s] of type [%s] in %s. Preview of field's value: '%s'
-										// https://github.com/elastic/elasticsearch/blob/588eabe185ad319c0268a13480465966cef058cd/server/src/main/java/org/elasticsearch/index/mapper/FieldMapper.java#L234
-										item.Error.Reason, _, _ = strings.Cut(
-											reason, ". Preview",
-										)
+										item.Error.Reason = i.ReadString()
 									default:
 										i.Skip()
 									}
@@ -184,10 +168,6 @@ func init() {
 							}
 							return true
 						})
-						// For specific exceptions, remove item.Error.Reason as it may contain sensitive request content.
-						if item.Error.Type == "unavailable_shards_exception" || item.Error.Type == "x_content_parse_exception" || item.Error.Type == "document_parsing_exception" {
-							item.Error.Reason = ""
-						}
 
 						item.Position = idx
 						idx++
@@ -223,17 +203,13 @@ func (cw *countWriter) Write(p []byte) (int, error) {
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 // The returned BulkIndexer is NOT safe for concurrent use by multiple goroutines.
 func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
-	if cfg.Client == nil {
-		return nil, errors.New("client is nil")
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+	return newBulkIndexer(cfg), nil
+}
 
-	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
-		return nil, fmt.Errorf(
-			"expected CompressionLevel in range [-1,9], got %d",
-			cfg.CompressionLevel,
-		)
-	}
-
+func newBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
 		config:            cfg,
 		retryCounts:       make(map[int]int),
@@ -253,13 +229,18 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		writer = &b.buf
 	}
 	b.writer = &countWriter{0, writer}
-	return b, nil
+	return b
 }
 
 // Reset resets bulk indexer, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
 	b.bytesUncompFlushed = 0
+}
+
+// SetClient resets the client used by the bulk indexer.
+func (b *BulkIndexer) SetClient(client elastictransport.Interface) {
+	b.config.Client = client
 }
 
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
@@ -399,6 +380,43 @@ func (b *BulkIndexer) writeMeta(
 	b.jsonw.Reset()
 }
 
+func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, error) {
+	// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
+	// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
+	// reading from the buffer after the request is done and the call to `req.Do` has returned.
+	// This may happen in HTTP error cases when the server isn't required to read the full
+	// request body before sending a response.
+	// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
+	// internal member variables (b.buf.off, b.buf.lastRead).
+	// See: https://github.com/golang/go/issues/51907
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/_bulk", bytes.NewReader(b.buf.Bytes()))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", "application/json")
+	v := req.URL.Query()
+	if b.config.Pipeline != "" {
+		v.Set("pipeline", b.config.Pipeline)
+	}
+	if b.config.RequireDataStream {
+		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
+	}
+	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
+	if b.config.IncludeSourceOnError != Unset {
+		switch b.config.IncludeSourceOnError {
+		case False:
+			v.Set("include_source_on_error", "false")
+		case True:
+			v.Set("include_source_on_error", "true")
+		}
+	}
+
+	req.URL.RawQuery = v.Encode()
+
+	return req, nil
+}
+
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
 func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error) {
 	if b.itemsAdded == 0 {
@@ -420,30 +438,18 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		copy(b.copyBuf, b.buf.Bytes())
 	}
 
-	req := esapi.BulkRequest{
-		// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
-		// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
-		// reading from the buffer after the request is done and the call to `req.Do` has returned.
-		// This may happen in HTTP error cases when the server isn't required to read the full
-		// request body before sending a response.
-		// This can cause undefined behavior (and panics) due to concurrent reads/writes to bytes.Buffer
-		// internal member variables (b.buf.off, b.buf.lastRead).
-		// See: https://github.com/golang/go/issues/51907
-		Body:       bytes.NewReader(b.buf.Bytes()),
-		Header:     make(http.Header),
-		FilterPath: []string{"items.*._index", "items.*.status", "items.*.error.type", "items.*.error.reason"},
-		Pipeline:   b.config.Pipeline,
+	req, err := b.newBulkIndexRequest(ctx)
+	if err != nil {
+		return BulkIndexerResponseStat{}, fmt.Errorf("failed to create bulk index request: %w", err)
 	}
-	if b.requireDataStream {
-		req.RequireDataStream = &b.requireDataStream
-	}
+
 	if b.gzipw != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
 	bytesFlushed := b.buf.Len()
 	bytesUncompFlushed := b.writer.bytesWritten
-	res, err := req.Do(ctx, b.config.Client)
+	res, err := b.config.Client.Perform(req)
 	if err != nil {
 		b.resetBuf()
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
@@ -459,28 +465,35 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesFlushed = bytesFlushed
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
-	if res.IsError() {
+	if res.StatusCode > 299 {
 		var s string
-		var er struct {
-			Error struct {
-				Type     string `json:"type,omitempty"`
-				Reason   string `json:"reason,omitempty"`
-				CausedBy struct {
-					Type   string `json:"type,omitempty"`
-					Reason string `json:"reason,omitempty"`
-				} `json:"caused_by,omitempty"`
-			} `json:"error,omitempty"`
-		}
+		if b.config.IncludeSourceOnError == Unset {
+			var er struct {
+				Error struct {
+					Type     string `json:"type,omitempty"`
+					Reason   string `json:"reason,omitempty"`
+					CausedBy struct {
+						Type   string `json:"type,omitempty"`
+						Reason string `json:"reason,omitempty"`
+					} `json:"caused_by,omitempty"`
+				} `json:"error,omitempty"`
+			}
 
-		if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
-			er.Error.Reason = ""
-			er.Error.CausedBy.Reason = ""
+			if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
+				er.Error.Reason = ""
+				er.Error.CausedBy.Reason = ""
 
-			b, _ := json.Marshal(&er)
+				b, _ := json.Marshal(&er)
+				s = string(b)
+			}
+		} else {
+			b, err := io.ReadAll(res.Body)
+			if err != nil {
+				return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
+			}
 			s = string(b)
 		}
-
-		e := errorFlushFailed{resp: s, statusCode: res.StatusCode}
+		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
 		case res.StatusCode == 429:
 			e.tooMany = true
@@ -494,6 +507,13 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+
+	if b.config.IncludeSourceOnError == Unset {
+		for i, doc := range resp.FailedDocs {
+			doc.Error.Reason = ""
+			resp.FailedDocs[i] = doc
+		}
 	}
 
 	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
@@ -691,7 +711,7 @@ func indexnth(s []byte, nth int, sep rune) int {
 	})
 }
 
-type errorFlushFailed struct {
+type ErrorFlushFailed struct {
 	resp        string
 	statusCode  int
 	tooMany     bool
@@ -699,6 +719,14 @@ type errorFlushFailed struct {
 	serverError bool
 }
 
-func (e errorFlushFailed) Error() string {
+func (e ErrorFlushFailed) StatusCode() int {
+	return e.statusCode
+}
+
+func (e ErrorFlushFailed) ResponseBody() string {
+	return e.resp
+}
+
+func (e ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
 }

@@ -298,6 +298,52 @@ func TestItemRequireDataStream(t *testing.T) {
 	require.Equal(t, int64(2), stat.Indexed)
 }
 
+func TestBulkIndexer_FailureStore(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		var i int
+		for _, itemsMap := range result.Items {
+			for k, item := range itemsMap {
+				switch i % 4 {
+				case 0:
+					item.FailureStore = string(docappender.FailureStoreStatusUsed)
+				case 1:
+					item.FailureStore = string(docappender.FailureStoreStatusFailed)
+				case 2:
+					item.FailureStore = string(docappender.FailureStoreStatusUnknown)
+				case 3:
+					item.FailureStore = string(docappender.FailureStoreStatusNotEnabled)
+				}
+				itemsMap[k] = item
+				i++
+			}
+		}
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	for range 4 {
+		err = indexer.Add(docappender.BulkIndexerItem{
+			Index: "testidx",
+			Body: newJSONReader(map[string]any{
+				"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+			}),
+		})
+		require.NoError(t, err)
+	}
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(4), stat.Indexed)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.Used)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.Failed)
+	require.Equal(t, int64(1), stat.FailureStoreDocs.NotEnabled)
+}
+
 func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +396,7 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 				Error: struct {
 					Type   string `json:"type"`
 					Reason string `json:"reason"`
-				}{Type: "validation_error", Reason: "for testing"},
+				}{Type: "validation_error", Reason: ""},
 				Input: `{"create":{"_index":"foo"}}
 {"1":"2"}
 `,
@@ -362,7 +408,7 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 				Error: struct {
 					Type   string `json:"type"`
 					Reason string `json:"reason"`
-				}{Type: "validation_error", Reason: "for testing"},
+				}{Type: "validation_error", Reason: ""},
 				Input: `{"create":{"_index":"bar"}}
 {"5":"6"}
 `,
