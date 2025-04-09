@@ -1022,6 +1022,24 @@ func TestAppenderRetryDocument(t *testing.T) {
 				CompressionLevel:   gzip.BestCompression,
 			},
 		},
+		// As populateFailedDocsInput reuses some code as document retry, ensure that they work together.
+		"nocompression,populateFailedDocsInput": {
+			cfg: docappender.Config{
+				MaxRequests:             1,
+				MaxDocumentRetries:      100,
+				FlushInterval:           100 * time.Millisecond,
+				PopulateFailedDocsInput: true,
+			},
+		},
+		"gzip,populateFailedDocsInput": {
+			cfg: docappender.Config{
+				MaxRequests:             1,
+				MaxDocumentRetries:      100,
+				FlushInterval:           100 * time.Millisecond,
+				CompressionLevel:        gzip.BestCompression,
+				PopulateFailedDocsInput: true,
+			},
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
