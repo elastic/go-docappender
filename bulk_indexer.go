@@ -549,6 +549,8 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// keep track of the previous newlines
 		// the buffer is being read lazily
 		seen := 0
+
+		// writeItemAtPos writes the 2 lines for document at position `pos` in bulk request to io.Writer `to`
 		writeItemAtPos := func(to io.Writer, pos int) error {
 			// there are two lines for each document:
 			// - action
@@ -631,6 +633,8 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		var inputBuf bytes.Buffer
 
 		nonRetriable := resp.FailedDocs[:0]
+		// appendNonRetriable appends an item deemed non-retriable to the nonRetriable slice.
+		// At the same time, it optionally populates item.Input with the action and document lines of the document.
 		appendNonRetriable := func(item BulkIndexerResponseItem) (err error) {
 			if b.config.PopulateFailedDocsInput {
 				inputBuf.Reset()
