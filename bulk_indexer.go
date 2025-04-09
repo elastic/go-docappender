@@ -549,51 +549,34 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		// keep track of the previous newlines
 		// the buffer is being read lazily
 		seen := 0
-		writeItemAtPos := func(to io.Writer, pos int) error {
-			// there are two lines for each document:
-			// - action
-			// - document
-			//
-			// Find the document by looking up the newline separators.
-			// First the newline (if exists) before the 'action' then the
-			// newline at the end of the 'document' line.
-			startln := pos * 2
-			endln := startln + 2
+		var writeItemAtPos func(to io.Writer, pos int) error
+		{
+			writeItemAtPos = func(to io.Writer, pos int) error {
+				// there are two lines for each document:
+				// - action
+				// - document
+				//
+				// Find the document by looking up the newline separators.
+				// First the newline (if exists) before the 'action' then the
+				// newline at the end of the 'document' line.
+				startln := pos * 2
+				endln := startln + 2
 
-			if b.gzipw != nil {
-				// First loop, read from the gzip reader
-				if len(buf) == 0 {
-					n, err := gr.Read(buf[:cap(buf)])
-					if err != nil && err != io.EOF {
-						return fmt.Errorf("failed to read from compressed buffer: %w", err)
+				if b.gzipw != nil {
+					// First loop, read from the gzip reader
+					if len(buf) == 0 {
+						n, err := gr.Read(buf[:cap(buf)])
+						if err != nil && err != io.EOF {
+							return fmt.Errorf("failed to read from compressed buffer: %w", err)
+						}
+						buf = buf[:n]
 					}
-					buf = buf[:n]
-				}
 
-				// newlines in the current buf
-				newlines := bytes.Count(buf, []byte{'\n'})
+					// newlines in the current buf
+					newlines := bytes.Count(buf, []byte{'\n'})
 
-				// loop until we've seen the start newline
-				for seen+newlines < startln {
-					seen += newlines
-					n, err := gr.Read(buf[:cap(buf)])
-					if err != nil && err != io.EOF {
-						return fmt.Errorf("failed to read from compressed buffer: %w", err)
-					}
-					buf = buf[:n]
-					newlines = bytes.Count(buf, []byte{'\n'})
-				}
-
-				startIdx := indexnth(buf, startln-seen, '\n') + 1
-				endIdx := indexnth(buf, endln-seen, '\n') + 1
-
-				// If the end newline is not in the buffer read more data
-				if endIdx == 0 {
-					// Write what we have
-					to.Write(buf[startIdx:])
-
-					// loop until we've seen the end newline
-					for seen+newlines < endln {
+					// loop until we've seen the start newline
+					for seen+newlines < startln {
 						seen += newlines
 						n, err := gr.Read(buf[:cap(buf)])
 						if err != nil && err != io.EOF {
@@ -601,30 +584,50 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						}
 						buf = buf[:n]
 						newlines = bytes.Count(buf, []byte{'\n'})
-						if seen+newlines < endln {
-							// endln is not here, write what we have and keep going
-							to.Write(buf)
-						}
 					}
 
-					// try again to find the end newline in the extra data
-					// we just read.
-					endIdx = indexnth(buf, endln-seen, '\n') + 1
-					to.Write(buf[:endIdx])
+					startIdx := indexnth(buf, startln-seen, '\n') + 1
+					endIdx := indexnth(buf, endln-seen, '\n') + 1
+
+					// If the end newline is not in the buffer read more data
+					if endIdx == 0 {
+						// Write what we have
+						to.Write(buf[startIdx:])
+
+						// loop until we've seen the end newline
+						for seen+newlines < endln {
+							seen += newlines
+							n, err := gr.Read(buf[:cap(buf)])
+							if err != nil && err != io.EOF {
+								return fmt.Errorf("failed to read from compressed buffer: %w", err)
+							}
+							buf = buf[:n]
+							newlines = bytes.Count(buf, []byte{'\n'})
+							if seen+newlines < endln {
+								// endln is not here, write what we have and keep going
+								to.Write(buf)
+							}
+						}
+
+						// try again to find the end newline in the extra data
+						// we just read.
+						endIdx = indexnth(buf, endln-seen, '\n') + 1
+						to.Write(buf[:endIdx])
+					} else {
+						// If the end newline is in the buffer write the event
+						to.Write(buf[startIdx:endIdx])
+					}
 				} else {
-					// If the end newline is in the buffer write the event
-					to.Write(buf[startIdx:endIdx])
+					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
+					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
+
+					to.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
+
+					lastln = endln
+					lastIdx += endIdx
 				}
-			} else {
-				startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
-				endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
-
-				to.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
-
-				lastln = endln
-				lastIdx += endIdx
+				return nil
 			}
-			return nil
 		}
 
 		// inputBuf is only used to populate failed item input
