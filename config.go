@@ -22,12 +22,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 )
 
 type Value int
@@ -143,6 +144,16 @@ type Config struct {
 	//
 	// IncludeSourceOnError is Unset by default
 	IncludeSourceOnError Value
+
+	// PopulateFailedDocsInput controls whether each BulkIndexerResponseItem.Input
+	// in BulkIndexerResponseStat.FailedDocs is populated with the input of the item,
+	// which includes the action line and the document line.
+	//
+	// WARNING: this is provided for testing and debugging only.
+	// Use with caution as it may expose sensitive data; any clients
+	// of go-docappender enabling this should relay this warning to
+	// their users. Setting this will also add memory overhead.
+	PopulateFailedDocsInput bool
 
 	// Scaling configuration for the docappender.
 	//
@@ -314,6 +325,16 @@ type BulkIndexerConfig struct {
 	//
 	// IncludeSourceOnError is Unset by default
 	IncludeSourceOnError Value
+
+	// PopulateFailedDocsInput controls whether each BulkIndexerResponseItem.Input
+	// in BulkIndexerResponseStat.FailedDocs is populated with the input of the item,
+	// which includes the action line and the document line.
+	//
+	// WARNING: this is provided for testing and debugging only.
+	// Use with caution as it may expose sensitive data; any clients
+	// of go-docappender enabling this should relay this warning to
+	// their users. Setting this will also add memory overhead.
+	PopulateFailedDocsInput bool
 }
 
 // Validate checks the configuration for errors.
@@ -334,12 +355,13 @@ func (cfg BulkIndexerConfig) Validate() error {
 // with additional information included as necessary.
 func BulkIndexerConfigFrom(cl elastictransport.Interface, cfg Config) BulkIndexerConfig {
 	return BulkIndexerConfig{
-		Client:                cl,
-		MaxDocumentRetries:    cfg.MaxDocumentRetries,
-		RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
-		CompressionLevel:      cfg.CompressionLevel,
-		Pipeline:              cfg.Pipeline,
-		RequireDataStream:     cfg.RequireDataStream,
-		IncludeSourceOnError:  cfg.IncludeSourceOnError,
+		Client:                  cl,
+		MaxDocumentRetries:      cfg.MaxDocumentRetries,
+		RetryOnDocumentStatus:   cfg.RetryOnDocumentStatus,
+		CompressionLevel:        cfg.CompressionLevel,
+		Pipeline:                cfg.Pipeline,
+		RequireDataStream:       cfg.RequireDataStream,
+		IncludeSourceOnError:    cfg.IncludeSourceOnError,
+		PopulateFailedDocsInput: cfg.PopulateFailedDocsInput,
 	}
 }
