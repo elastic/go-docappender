@@ -36,8 +36,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.elastic.co/apm/v2/apmtest"
-	"go.elastic.co/apm/v2/model"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -1785,61 +1783,6 @@ func setGOMAXPROCS(t *testing.T, new int) {
 	runtime.GOMAXPROCS(new)
 }
 
-func TestAppenderTracing(t *testing.T) {
-	testAppenderTracing(t, 200, "success")
-	testAppenderTracing(t, 400, "failure")
-}
-
-func testAppenderTracing(t *testing.T, statusCode int, expectedOutcome string) {
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(statusCode)
-		_, result := docappendertest.DecodeBulkRequest(r)
-		json.NewEncoder(w).Encode(result)
-	})
-
-	core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
-	tracer := apmtest.NewRecordingTracer()
-	defer tracer.Close()
-	indexer, err := docappender.New(client, docappender.Config{
-		FlushInterval: time.Minute,
-		Logger:        zap.New(core),
-		Tracer:        tracer.Tracer,
-	})
-	require.NoError(t, err)
-	defer indexer.Close(context.Background())
-
-	const N = 100
-	for i := 0; i < N; i++ {
-		addMinimalDoc(t, indexer, "logs-foo-testing")
-	}
-
-	// Closing the indexer flushes enqueued documents.
-	_ = indexer.Close(context.Background())
-
-	tracer.Flush(nil)
-	payloads := tracer.Payloads()
-	require.Len(t, payloads.Transactions, 1)
-	require.Len(t, payloads.Spans, 1)
-
-	assert.Equal(t, expectedOutcome, payloads.Transactions[0].Outcome)
-	assert.Equal(t, "output", payloads.Transactions[0].Type)
-	assert.Equal(t, model.IfaceMapItem{Key: "documents", Value: float64(N)},
-		payloads.Transactions[0].Context.Tags[0],
-	)
-	assert.Equal(t, "docappender.flush", payloads.Transactions[0].Name)
-	assert.Equal(t, "Elasticsearch: POST _bulk", payloads.Spans[0].Name)
-	assert.Equal(t, "db", payloads.Spans[0].Type)
-	assert.Equal(t, "elasticsearch", payloads.Spans[0].Subtype)
-
-	correlatedLogs := observed.FilterFieldKey("transaction.id").All()
-	assert.NotEmpty(t, correlatedLogs)
-	for _, entry := range correlatedLogs {
-		fields := entry.ContextMap()
-		assert.Equal(t, fmt.Sprintf("%x", payloads.Transactions[0].ID), fields["transaction.id"])
-		assert.Equal(t, fmt.Sprintf("%x", payloads.Transactions[0].TraceID), fields["trace.id"])
-	}
-}
-
 func addMinimalDoc(t testing.TB, indexer *docappender.Appender, index string) {
 	err := indexer.Add(context.Background(), index, newJSONReader(map[string]any{
 		"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
@@ -1894,10 +1837,8 @@ func testTracedAppend(t *testing.T, responseCode int, status sdktrace.Status) {
 	defer tp.Shutdown(context.Background())
 
 	indexer, err := docappender.New(client, docappender.Config{
-		FlushInterval: time.Minute,
-		Logger:        zap.New(core),
-		// NOTE: Tracer must be nil to use otel tracing
-		Tracer:         nil,
+		FlushInterval:  time.Minute,
+		Logger:         zap.New(core),
 		TracerProvider: tp,
 	})
 	require.NoError(t, err)
