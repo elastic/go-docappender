@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,11 +28,11 @@ import (
 	"strconv"
 	"unsafe"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/gzip"
 	"go.elastic.co/fastjson"
 
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
-	jsoniter "github.com/json-iterator/go"
 )
 
 // At the time of writing, the go-elasticsearch BulkIndexer implementation
@@ -57,51 +56,6 @@ const (
 	ActionIndex  = "index"
 	ActionUpdate = "update"
 )
-
-// BulkIndexerConfig holds configuration for BulkIndexer.
-type BulkIndexerConfig struct {
-	// Client holds the Elasticsearch client.
-	Client elastictransport.Interface
-
-	// MaxDocumentRetries holds the maximum number of document retries
-	MaxDocumentRetries int
-
-	// RetryOnDocumentStatus holds the document level statuses that will trigger a document retry.
-	//
-	// If RetryOnDocumentStatus is empty or nil, the default of [429] will be used.
-	RetryOnDocumentStatus []int
-
-	// CompressionLevel holds the gzip compression level, from 0 (gzip.NoCompression)
-	// to 9 (gzip.BestCompression). Higher values provide greater compression, at a
-	// greater cost of CPU. The special value -1 (gzip.DefaultCompression) selects the
-	// default compression level.
-	CompressionLevel int
-
-	// Pipeline holds the ingest pipeline ID.
-	//
-	// If Pipeline is empty, no ingest pipeline will be specified in the Bulk request.
-	Pipeline string
-
-	// RequireDataStream, If set to true, an index will be created only if a
-	// matching index template is found and it contains a data stream template.
-	// When true, `require_data_stream=true` is set in the bulk request.
-	// When false or not set, `require_data_stream` is not set in the bulk request.
-	// Which could cause a classic index to be created if no data stream template
-	// matches the index in the request.
-	//
-	// RequireDataStream is disabled by default.
-	RequireDataStream bool
-
-	// IncludeSourceOnError, if set to True, the response body of a Bulk Index request
-	// might contain the part of source document on error.
-	// If Unset the error reason will be dropped.
-	// Requires Elasticsearch 8.18+ if value is True or False.
-	// WARNING: if set to True, user is responsible for sanitizing the error as it may contain
-	// sensitive data.
-	//
-	// IncludeSourceOnError is Unset by default
-	IncludeSourceOnError Value
-}
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
@@ -152,6 +106,8 @@ type BulkIndexerResponseItem struct {
 		Type   string `json:"type"`
 		Reason string `json:"reason"`
 	} `json:"error,omitempty"`
+
+	Input string `json:"-"`
 }
 
 // FailureStoreStatus defines enumeration type for all known failure store statuses.
@@ -247,17 +203,13 @@ func (cw *countWriter) Write(p []byte) (int, error) {
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
 // The returned BulkIndexer is NOT safe for concurrent use by multiple goroutines.
 func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
-	if cfg.Client == nil {
-		return nil, errors.New("client is nil")
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+	return newBulkIndexer(cfg), nil
+}
 
-	if cfg.CompressionLevel < -1 || cfg.CompressionLevel > 9 {
-		return nil, fmt.Errorf(
-			"expected CompressionLevel in range [-1,9], got %d",
-			cfg.CompressionLevel,
-		)
-	}
-
+func newBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
 		config:            cfg,
 		retryCounts:       make(map[int]int),
@@ -277,13 +229,18 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 		writer = &b.buf
 	}
 	b.writer = &countWriter{0, writer}
-	return b, nil
+	return b
 }
 
 // Reset resets bulk indexer, ready for a new request.
 func (b *BulkIndexer) Reset() {
 	b.bytesFlushed = 0
 	b.bytesUncompFlushed = 0
+}
+
+// SetClient resets the client used by the bulk indexer.
+func (b *BulkIndexer) SetClient(client elastictransport.Interface) {
+	b.config.Client = client
 }
 
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
@@ -472,7 +429,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetries > 0 {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
 		n := b.buf.Len()
 		if cap(b.copyBuf) < n {
 			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
@@ -559,8 +516,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	// Only run the retry logic if document retries are enabled
-	if b.config.MaxDocumentRetries > 0 {
+	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
 		buf := make([]byte, 0, 4096)
 
 		// Eliminate previous retry counts that aren't present in the bulk
@@ -579,11 +535,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			}
 		}
 
-		tmp := resp.FailedDocs[:0]
-		lastln := 0
-		lastIdx := 0
 		var gr *gzip.Reader
-
 		if b.gzipw != nil {
 			gr, err = gzip.NewReader(bytes.NewReader(b.copyBuf))
 			if err != nil {
@@ -592,28 +544,120 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			defer gr.Close()
 		}
 
+		lastln := 0
+		lastIdx := 0
 		// keep track of the previous newlines
 		// the buffer is being read lazily
 		seen := 0
 
-		for _, res := range resp.FailedDocs {
-			if b.shouldRetryOnStatus(res.Status) {
-				// there are two lines for each document:
-				// - action
-				// - document
-				//
-				// Find the document by looking up the newline separators.
-				// First the newline (if exists) before the 'action' then the
-				// newline at the end of the 'document' line.
-				startln := res.Position * 2
-				endln := startln + 2
+		// writeItemAtPos writes the 2 lines for document at position `pos` in bulk request to io.Writer `to`
+		writeItemAtPos := func(to io.Writer, pos int) error {
+			// there are two lines for each document:
+			// - action
+			// - document
+			//
+			// Find the document by looking up the newline separators.
+			// First the newline (if exists) before the 'action' then the
+			// newline at the end of the 'document' line.
+			startln := pos * 2
+			endln := startln + 2
 
+			if b.gzipw != nil {
+				// First loop, read from the gzip reader
+				if len(buf) == 0 {
+					n, err := gr.Read(buf[:cap(buf)])
+					if err != nil && err != io.EOF {
+						return fmt.Errorf("failed to read from compressed buffer: %w", err)
+					}
+					buf = buf[:n]
+				}
+
+				// newlines in the current buf
+				newlines := bytes.Count(buf, []byte{'\n'})
+
+				// loop until we've seen the start newline
+				for seen+newlines < startln {
+					seen += newlines
+					n, err := gr.Read(buf[:cap(buf)])
+					if err != nil && err != io.EOF {
+						return fmt.Errorf("failed to read from compressed buffer: %w", err)
+					}
+					buf = buf[:n]
+					newlines = bytes.Count(buf, []byte{'\n'})
+				}
+
+				startIdx := indexnth(buf, startln-seen, '\n') + 1
+				endIdx := indexnth(buf, endln-seen, '\n') + 1
+
+				// If the end newline is not in the buffer read more data
+				if endIdx == 0 {
+					// Write what we have
+					to.Write(buf[startIdx:])
+
+					// loop until we've seen the end newline
+					for seen+newlines < endln {
+						seen += newlines
+						n, err := gr.Read(buf[:cap(buf)])
+						if err != nil && err != io.EOF {
+							return fmt.Errorf("failed to read from compressed buffer: %w", err)
+						}
+						buf = buf[:n]
+						newlines = bytes.Count(buf, []byte{'\n'})
+						if seen+newlines < endln {
+							// endln is not here, write what we have and keep going
+							to.Write(buf)
+						}
+					}
+
+					// try again to find the end newline in the extra data
+					// we just read.
+					endIdx = indexnth(buf, endln-seen, '\n') + 1
+					to.Write(buf[:endIdx])
+				} else {
+					// If the end newline is in the buffer write the event
+					to.Write(buf[startIdx:endIdx])
+				}
+			} else {
+				startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
+				endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
+
+				to.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
+
+				lastln = endln
+				lastIdx += endIdx
+			}
+			return nil
+		}
+
+		// inputBuf is only used to populate failed item input
+		var inputBuf bytes.Buffer
+
+		nonRetriable := resp.FailedDocs[:0]
+		// appendNonRetriable appends an item deemed non-retriable to the nonRetriable slice.
+		// At the same time, it optionally populates item.Input with the action and document lines of the document.
+		appendNonRetriable := func(item BulkIndexerResponseItem) (err error) {
+			if b.config.PopulateFailedDocsInput {
+				inputBuf.Reset()
+				// In an ideal world, PopulateFailedDocsInput failures should not cause a flush failure.
+				// But since this is only for debugging / testing, and any writeItemAtPos would reveal a bug in the code,
+				// fail fast and explicitly.
+				err = writeItemAtPos(&inputBuf, item.Position)
+				item.Input = inputBuf.String()
+			}
+			nonRetriable = append(nonRetriable, item)
+			return
+		}
+
+		for _, item := range resp.FailedDocs {
+			if b.config.MaxDocumentRetries > 0 && b.shouldRetryOnStatus(item.Status) {
 				// Increment retry count for the positions found.
-				count := b.retryCounts[res.Position] + 1
+				count := b.retryCounts[item.Position] + 1
 				// check if we are above the maxDocumentRetry setting
 				if count > b.config.MaxDocumentRetries {
 					// do not retry, return the document as failed
-					tmp = append(tmp, res)
+					if err := appendNonRetriable(item); err != nil {
+						return resp, err
+					}
 					continue
 				}
 				if resp.GreatestRetry < count {
@@ -624,83 +668,23 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 				// to be updated to match the next current buffer position.
 				b.retryCounts[b.itemsAdded] = count
 
-				if b.gzipw != nil {
-					// First loop, read from the gzip reader
-					if len(buf) == 0 {
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-					}
-
-					// newlines in the current buf
-					newlines := bytes.Count(buf, []byte{'\n'})
-
-					// loop until we've seen the start newline
-					for seen+newlines < startln {
-						seen += newlines
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-						newlines = bytes.Count(buf, []byte{'\n'})
-					}
-
-					startIdx := indexnth(buf, startln-seen, '\n') + 1
-					endIdx := indexnth(buf, endln-seen, '\n') + 1
-
-					// If the end newline is not in the buffer read more data
-					if endIdx == 0 {
-						// Write what we have
-						b.writer.Write(buf[startIdx:])
-
-						// loop until we've seen the end newline
-						for seen+newlines < endln {
-							seen += newlines
-							n, err := gr.Read(buf[:cap(buf)])
-							if err != nil && err != io.EOF {
-								return resp, fmt.Errorf("failed to read from compressed buffer: %w", err)
-							}
-							buf = buf[:n]
-							newlines = bytes.Count(buf, []byte{'\n'})
-							if seen+newlines < endln {
-								// endln is not here, write what we have and keep going
-								b.writer.Write(buf)
-							}
-						}
-
-						// try again to find the end newline in the extra data
-						// we just read.
-						endIdx = indexnth(buf, endln-seen, '\n') + 1
-						b.writer.Write(buf[:endIdx])
-					} else {
-						// If the end newline is in the buffer write the event
-						b.writer.Write(buf[startIdx:endIdx])
-					}
-				} else {
-					startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
-					endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
-
-					b.writer.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
-
-					lastln = endln
-					lastIdx += endIdx
+				if err := writeItemAtPos(b.writer, item.Position); err != nil {
+					return resp, err
 				}
-
 				resp.RetriedDocs++
 				b.itemsAdded++
 			} else {
 				// If it's not a retriable error, treat the document as failed
-				tmp = append(tmp, res)
+				if err := appendNonRetriable(item); err != nil {
+					return resp, err
+				}
 			}
 		}
 
 		// FailedDocs contain responses of
 		// - non-retriable errors
 		// - retriable errors that reached the retry limit
-		resp.FailedDocs = tmp
+		resp.FailedDocs = nonRetriable
 	}
 
 	return resp, nil

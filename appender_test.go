@@ -217,6 +217,8 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.bulk_requests.inflight":
+			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)
 		}
@@ -362,6 +364,8 @@ loop:
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
+		case "elasticsearch.bulk_requests.inflight":
+			// Concurrent bulk requests are observed, but ignored.
 		default:
 			unexpectedMetrics = append(unexpectedMetrics, m.Name)
 		}
@@ -1016,6 +1020,24 @@ func TestAppenderRetryDocument(t *testing.T) {
 				CompressionLevel:   gzip.BestCompression,
 			},
 		},
+		// As populateFailedDocsInput reuses some code as document retry, ensure that they work together.
+		"nocompression,populateFailedDocsInput": {
+			cfg: docappender.Config{
+				MaxRequests:             1,
+				MaxDocumentRetries:      100,
+				FlushInterval:           100 * time.Millisecond,
+				PopulateFailedDocsInput: true,
+			},
+		},
+		"gzip,populateFailedDocsInput": {
+			cfg: docappender.Config{
+				MaxRequests:             1,
+				MaxDocumentRetries:      100,
+				FlushInterval:           100 * time.Millisecond,
+				CompressionLevel:        gzip.BestCompression,
+				PopulateFailedDocsInput: true,
+			},
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
@@ -1305,7 +1327,10 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 	cancel()
 	select {
 	case err := <-closed:
-		assert.ErrorIs(t, err, context.Canceled)
+		// Since the bulk_indexers are blocked by the Elasticsearch _bulk,
+		// The context is cancelled and it may return `context canceled` or
+		// `cancelled by appender.close`.
+		assert.ErrorContains(t, err, "failed to execute the request")
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Close to return")
 	}
