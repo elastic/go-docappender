@@ -30,8 +30,6 @@ import (
 	"time"
 
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
-	"go.elastic.co/apm/module/apmzap/v2"
-	"go.elastic.co/apm/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -193,7 +191,7 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		return nil
 	})
 
-	if cfg.Tracer == nil && cfg.TracerProvider != nil {
+	if cfg.TracerProvider != nil {
 		indexer.tracer = cfg.TracerProvider.Tracer("github.com/elastic/go-docappender.appender")
 	}
 
@@ -326,16 +324,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 
 	logger := a.config.Logger
 	var span trace.Span
-	if a.tracingEnabled() {
-		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
-		tx.Context.SetLabel("documents", n)
-		defer tx.End()
-		ctx = apm.ContextWithTransaction(ctx, tx)
-
-		// Add trace IDs to logger, to associate any per-item errors
-		// below with the trace.
-		logger = logger.With(apmzap.TraceContext(ctx)...)
-	} else if a.otelTracingEnabled() {
+	if a.otelTracingEnabled() {
 		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
 			attribute.Int("documents", n),
 		))
@@ -375,9 +364,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
 		atomic.AddInt64(&a.docsFailed, int64(n))
 		logger.Error("bulk indexing request failed", zap.Error(err))
-		if a.tracingEnabled() {
-			apm.CaptureError(ctx, err).Send()
-		} else if a.otelTracingEnabled() && span.IsRecording() {
+		if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "bulk indexing request failed")
 		}
@@ -438,9 +425,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		info.Position = 0 // reset position so that the response item can be used as key in the map
 		failedCount[info]++
-		if a.tracingEnabled() {
-			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
-		} else if a.otelTracingEnabled() && span.IsRecording() {
+		if a.otelTracingEnabled() && span.IsRecording() {
 			e := errors.New(info.Error.Reason)
 			span.RecordError(e)
 			span.SetStatus(codes.Error, e.Error())
@@ -753,11 +738,6 @@ func (a *Appender) scalingInformation() scalingInfo {
 func (a *Appender) indexFailureRate() float64 {
 	return float64(atomic.LoadInt64(&a.tooManyRequests)) /
 		float64(atomic.LoadInt64(&a.docsAdded))
-}
-
-// tracingEnabled checks whether we should be doing tracing
-func (a *Appender) tracingEnabled() bool {
-	return a.config.Tracer != nil && a.config.Tracer.Recording()
 }
 
 // otelTracingEnabled checks whether we should be doing tracing

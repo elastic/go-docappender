@@ -58,8 +58,6 @@ go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.3 h1:5CuemBg1oZnXI6jz+jkLqM95N
 go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.3/go.mod h1:MVK2TIrvMGQaL7bnO4dbnJ+jpDNqmkj+BukDRBYTI60=
 go.elastic.co/apm/module/apmhttp/v2 v2.6.3 h1:jwFovJZkccySKCyy2oE9ZKvUry/a4gdQHF/MtZUQVtE=
 go.elastic.co/apm/module/apmhttp/v2 v2.6.3/go.mod h1:w94Gkk6uzI/K+eJYKDLB66tvWC5uK0fSHyWcyX2jPlQ=
-go.elastic.co/apm/module/apmzap/v2 v2.6.3 h1:QxszhmFs2qD42sHSd6qnZUv5xMPV7cVSIt1qU/o4nwA=
-go.elastic.co/apm/module/apmzap/v2 v2.6.3/go.mod h1:gOs+EJgXDCyg1pK4pcxN6fL9hKNC+s/Hj20e9RvGeJg=
 go.elastic.co/apm/v2 v2.6.3 h1:yVKFPLnmHOxpzLMGd3aexcik20ziXmRHqgcn9NZn/VU=
 go.elastic.co/apm/v2 v2.6.3/go.mod h1:33rOXgtHwbgZcDgi6I/GtCSMZQqgxkHC0IQT3gudKvo=
 go.elastic.co/fastjson v1.4.0 h1:a4BXUKXZHAzjVOPrqtEx2FDsIRBCMek01vCnrtyutWs=
