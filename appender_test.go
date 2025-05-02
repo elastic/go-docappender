@@ -92,12 +92,13 @@ func TestAppender(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.DeltaTemporality
+			return metricdata.CumulativeTemporality
 		},
 	))
 
 	indexerAttrs := attribute.NewSet(
-		attribute.String("a", "b"), attribute.String("c", "d"),
+		attribute.String("a", "b"),
+		attribute.String("c", "d"),
 	)
 
 	indexer, err := docappender.New(client, docappender.Config{
@@ -109,53 +110,41 @@ func TestAppender(t *testing.T) {
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	available := indexer.Stats().AvailableBulkRequests
 	const N = 10
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
-	timeout := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			// Because the internal channel is buffered to increase performance,
-			// the available indexer may not take documents right away, loop until
-			// the available bulk requests has been lowered.
-			if indexer.Stats().AvailableBulkRequests < available {
-				break loop
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for the active bulk indexer to pull from the available queue")
-		}
-	}
 	// Appender has not been flushed, there is one active bulk indexer.
-	assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
+	// assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
+	var asserted atomic.Int64
+	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+
+	// Collect metrics before flushing.
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.count":
+			assertCounter(m, N, indexerAttrs)
+		case "elasticsearch.events.queued":
+			assertCounter(m, N, indexerAttrs)
+		case "elasticsearch.bulk_requests.available":
+			assertCounter(m, 9, indexerAttrs)
+		case "elasticsearch.bulk_requests.inflight":
+			assertCounter(m, 1, indexerAttrs)
+		}
+	})
+	assert.Equal(t, int64(4), asserted.Load())
 
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
-	stats := indexer.Stats()
-	failed := int64(3)
-	assert.Equal(t, docappender.Stats{
-		Added:                  N,
-		Active:                 0,
-		BulkRequests:           1,
-		Failed:                 failed,
-		FailedClient:           1,
-		FailedServer:           1,
-		Indexed:                N - failed,
-		TooManyRequests:        1,
-		AvailableBulkRequests:  10,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressed,
-	}, stats)
 
-	var rm metricdata.ResourceMetrics
+	// Collect metrics after flushing.
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
-	var asserted atomic.Int64
-	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+	asserted.Store(0)
+	assertCounter = docappendertest.NewAssertCounter(t, &asserted)
 
 	var processedAsserted int
 	assertProcessedCounter := func(metric metricdata.Metrics, attrs attribute.Set) {
@@ -168,16 +157,16 @@ loop:
 			switch status.AsString() {
 			case "Success":
 				processedAsserted++
-				assert.Equal(t, stats.Indexed, dp.Value)
+				assert.Equal(t, int64(N-3), dp.Value)
 			case "FailedClient":
 				processedAsserted++
-				assert.Equal(t, stats.FailedClient, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
 			case "FailedServer":
 				processedAsserted++
-				assert.Equal(t, stats.FailedServer, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
 			case "TooMany":
 				processedAsserted++
-				assert.Equal(t, stats.TooManyRequests, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
 			case "FailureStore":
 				processedAsserted++
 				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
@@ -196,24 +185,29 @@ loop:
 			}
 		}
 	}
-	// check the set of names and then check the counter or histogram
+
+	// Check the set of names and then check the counter or histogram.
 	unexpectedMetrics := []string{}
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 		switch m.Name {
 		case "elasticsearch.events.count":
-			assertCounter(m, stats.Added, indexerAttrs)
+			assertCounter(m, N, indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(m, stats.Active, indexerAttrs)
+			assertCounter(m, 0, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
-			assertCounter(m, stats.BulkRequests, indexerAttrs)
+			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.events.processed":
 			assertProcessedCounter(m, indexerAttrs)
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
+			assertCounter(m, 10, indexerAttrs)
+		case "elasticsearch.indexer.created":
+			assertCounter(m, 1, indexerAttrs)
+		case "elasticsearch.indexer.destroyed":
+			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
-			assertCounter(m, stats.BytesTotal, indexerAttrs)
+			assertCounter(m, bytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
-			assertCounter(m, stats.BytesUncompressedTotal, indexerAttrs)
+			assertCounter(m, bytesUncompressed, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -233,6 +227,7 @@ func TestAppenderRetry(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	var first atomic.Bool
+
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
@@ -264,12 +259,13 @@ func TestAppenderRetry(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.DeltaTemporality
+			return metricdata.CumulativeTemporality
 		},
 	))
 
 	indexerAttrs := attribute.NewSet(
-		attribute.String("a", "b"), attribute.String("c", "d"),
+		attribute.String("a", "b"),
+		attribute.String("c", "d"),
 	)
 
 	indexer, err := docappender.New(client, docappender.Config{
@@ -289,30 +285,16 @@ func TestAppenderRetry(t *testing.T) {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
-	timeout := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			// Because the internal channel is buffered to increase performance,
-			// the available indexer may not take documents right away, loop until
-			// the available bulk requests has been lowered.
-			if indexer.Stats().BulkRequests == 1 {
-				break loop
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
-		}
-	}
+	<-time.After(10 * time.Millisecond)
 
-	stats := indexer.Stats()
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
 	var asserted atomic.Int64
 	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 
 	var processedAsserted int
-	assertProcessedCounter := func(metric metricdata.Metrics, attrs attribute.Set) {
+	assertProcessedCounter := func(metric metricdata.Metrics, value int, attrs attribute.Set) {
 		asserted.Add(1)
 		counter := metric.Data.(metricdata.Sum[int64])
 		for _, dp := range counter.DataPoints {
@@ -322,33 +304,47 @@ loop:
 			switch status.AsString() {
 			case "Success":
 				processedAsserted++
-				assert.Equal(t, stats.Indexed, dp.Value)
+				assert.Equal(t, int64(value), dp.Value)
 			case "FailedClient":
 				processedAsserted++
-				assert.Equal(t, stats.FailedClient, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
 			case "FailedServer":
 				processedAsserted++
-				assert.Equal(t, stats.FailedServer, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
 			case "TooMany":
 				processedAsserted++
-				assert.Equal(t, stats.TooManyRequests, dp.Value)
+				assert.Equal(t, int64(1), dp.Value)
+			case "FailureStore":
+				processedAsserted++
+				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
+				assert.True(t, exist)
+				assert.Contains(
+					t,
+					[]docappender.FailureStoreStatus{
+						docappender.FailureStoreStatusUsed,
+						docappender.FailureStoreStatusFailed,
+						docappender.FailureStoreStatusNotEnabled,
+					},
+					docappender.FailureStoreStatus(fs.AsString()),
+				)
 			default:
 				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
 			}
 		}
 	}
-	// check the set of names and then check the counter or histogram
+
+	// Check the set of names and then check the counter or histogram.
 	unexpectedMetrics := []string{}
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 		switch m.Name {
 		case "elasticsearch.events.count":
-			assertCounter(m, stats.Added, indexerAttrs)
+			assertCounter(m, N, indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(m, stats.Active, indexerAttrs)
+			assertCounter(m, 2, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
-			assertCounter(m, stats.BulkRequests, indexerAttrs)
+			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertProcessedCounter(m, indexerAttrs)
+			assertProcessedCounter(m, 6, indexerAttrs)
 		case "elasticsearch.events.retried":
 			assertCounter(m, 1, attribute.NewSet(
 				attribute.String("a", "b"),
@@ -356,11 +352,11 @@ loop:
 				attribute.Int("greatest_retry", 1),
 			))
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, stats.AvailableBulkRequests, indexerAttrs)
+			assertCounter(m, 0, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
-			assertCounter(m, stats.BytesTotal, indexerAttrs)
+			assertCounter(m, 792, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
-			assertCounter(m, stats.BytesUncompressedTotal, indexerAttrs)
+			assertCounter(m, 792, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -378,21 +374,26 @@ loop:
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
-	stats = indexer.Stats()
-	failed := int64(2)
-	assert.Equal(t, docappender.Stats{
-		Added:                  N,
-		Active:                 0,
-		BulkRequests:           2,
-		Failed:                 failed,
-		FailedClient:           1,
-		FailedServer:           1,
-		Indexed:                N - failed,
-		TooManyRequests:        0,
-		AvailableBulkRequests:  1,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressed,
-	}, stats)
+
+	// Collect metrics before flushing.
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.count":
+			assertCounter(m, int64(N), indexerAttrs)
+		case "elasticsearch.events.queued":
+			assertCounter(m, int64(0), indexerAttrs)
+		case "elasticsearch.events.processed":
+			assertProcessedCounter(m, 8, indexerAttrs) // 2 failed
+		case "elasticsearch.bulk_requests.available":
+			assertCounter(m, int64(1), indexerAttrs)
+		case "elasticsearch.flushed.bytes":
+			assertCounter(m, bytesTotal, indexerAttrs)
+		case "elasticsearch.flushed.uncompressed.bytes":
+			assertCounter(m, bytesUncompressed, indexerAttrs)
+		}
+	})
 }
 
 func TestAppenderAvailableAppenders(t *testing.T) {
@@ -405,7 +406,18 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 		_, result := docappendertest.DecodeBulkRequest(r)
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.New(client, docappender.Config{FlushInterval: time.Minute, FlushBytes: 1})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.CumulativeTemporality
+		},
+	))
+
+	indexer, err := docappender.New(client, docappender.Config{
+		MeterProvider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+		FlushInterval: time.Minute,
+		FlushBytes:    1,
+	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
@@ -413,6 +425,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
+
 	timeout := time.NewTimer(2 * time.Second)
 	defer timeout.Stop()
 	for i := 0; i < N; i++ {
@@ -422,23 +435,71 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 			t.Fatalf("timed out waiting for %d, received %d", N, i)
 		}
 	}
-	stats := indexer.Stats()
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
 	// FlushBytes is set arbitrarily low, forcing a flush on each new
 	// document. There should be no available bulk indexers.
-	assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 0, IndexersActive: 1}, stats)
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.events.queued":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.inflight":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.available":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(0), dp.Value)
+			}
+		}
+	})
 
 	close(unblockRequests)
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
-	stats = indexer.Stats()
-	stats.BytesTotal = 0             // Asserted elsewhere.
-	stats.BytesUncompressedTotal = 0 // Asserted elsewhere.
-	assert.Equal(t, docappender.Stats{
-		Added:                 N,
-		BulkRequests:          N,
-		Indexed:               N,
-		AvailableBulkRequests: 10,
-	}, stats)
+
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.events.processed":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.available":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(10), dp.Value)
+			}
+		}
+	})
 }
 
 func TestAppenderEncoding(t *testing.T) {
@@ -487,9 +548,17 @@ func TestAppenderCompressionLevel(t *testing.T) {
 		bytesUncompressedTotal += stat.UncompressedBytes
 		json.NewEncoder(w).Encode(result)
 	})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.CumulativeTemporality
+		},
+	))
+
 	indexer, err := docappender.New(client, docappender.Config{
 		CompressionLevel: gzip.BestSpeed,
 		FlushInterval:    time.Minute,
+		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
@@ -499,18 +568,43 @@ func TestAppenderCompressionLevel(t *testing.T) {
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
-	stats := indexer.Stats()
-	assert.Equal(t, docappender.Stats{
-		Added:                  1,
-		Active:                 0,
-		BulkRequests:           1,
-		Failed:                 0,
-		Indexed:                1,
-		TooManyRequests:        0,
-		AvailableBulkRequests:  10,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressedTotal,
-	}, stats)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch m.Name {
+		case "elasticsearch.events.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(1), dp.Value)
+			}
+		case "elasticsearch.events.queued":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(0), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(1), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.available":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(10), dp.Value)
+			}
+		case "elasticsearch.flushed.bytes":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(bytesTotal), dp.Value)
+			}
+		case "elasticsearch.flushed.uncompressed.bytes":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(bytesUncompressedTotal), dp.Value)
+			}
+		}
+	})
 }
 
 func TestAppenderFlushInterval(t *testing.T) {
@@ -709,8 +803,19 @@ func TestAppenderFlushRequestError(t *testing.T) {
 	// failed requests with different failure scenarios. Since a bulk request
 	// contains N documents, the appender should increment the categorized
 	// failure by the same number of documents in the request.
-	for _, includeSource := range []docappender.Value{docappender.Unset, docappender.True, docappender.False} {
-		for _, sc := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+	for _, includeSource := range []docappender.Value{
+		docappender.Unset,
+		docappender.True,
+		docappender.False,
+	} {
+		for _, sc := range []int{
+			http.StatusBadRequest,
+			http.StatusForbidden,
+			http.StatusTooManyRequests,
+			http.StatusInternalServerError,
+			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout,
+		} {
 			t.Run(strconv.Itoa(sc)+"/"+strconv.Itoa(int(includeSource)), func(t *testing.T) {
 				var bytesTotal int64
 				var bytesUncompressedTotal int64
@@ -724,14 +829,14 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 				rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 					func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-						return metricdata.DeltaTemporality
+						return metricdata.CumulativeTemporality
 					},
 				))
 
 				indexer, err := docappender.New(client, docappender.Config{
 					FlushInterval:        time.Minute,
-					MeterProvider:        sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 					IncludeSourceOnError: includeSource,
+					MeterProvider:        sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 				})
 				require.NoError(t, err)
 				defer indexer.Close(context.Background())
@@ -744,6 +849,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 				// Closing the indexer flushes enqueued documents.
 				err = indexer.Close(context.Background())
+
 				switch includeSource {
 				case docappender.False, docappender.True:
 					// include_source=false is implemented in ES so we just assert we're not
@@ -756,42 +862,84 @@ func TestAppenderFlushRequestError(t *testing.T) {
 				default:
 					t.Fatal("unknown include source setting")
 				}
-				stats := indexer.Stats()
-				wantStats := docappender.Stats{
-					Added:                  int64(docs),
-					Active:                 0,
-					BulkRequests:           1, // Single bulk request
-					Failed:                 int64(docs),
-					AvailableBulkRequests:  10,
-					BytesTotal:             bytesTotal,
-					BytesUncompressedTotal: bytesUncompressedTotal,
-				}
+
 				var status string
 				switch {
 				case sc == 429:
 					status = "TooMany"
-					wantStats.TooManyRequests = int64(docs)
 				case sc >= 500:
 					status = "FailedServer"
-					wantStats.FailedServer = int64(docs)
 				case sc >= 400 && sc != 429:
 					status = "FailedClient"
-					wantStats.FailedClient = int64(docs)
 				}
-				assert.Equal(t, wantStats, stats)
 
 				var rm metricdata.ResourceMetrics
 				assert.NoError(t, rdr.Collect(context.Background(), &rm))
 
 				var asserted atomic.Int64
-				assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 				docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 					switch m.Name {
+					case "elasticsearch.events.count":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(docs), dp.Value)
+						}
+					case "elasticsearch.events.queued":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(0), dp.Value)
+						}
+					case "elasticsearch.bulk_requests.count":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(1), dp.Value)
+						}
+					case "elasticsearch.bulk_requests.available":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(10), dp.Value)
+						}
+					case "elasticsearch.flushed.bytes":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(bytesTotal), dp.Value)
+						}
+					case "elasticsearch.flushed.uncompressed.bytes":
+						asserted.Add(1)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							assert.Equal(t, int64(bytesUncompressedTotal), dp.Value)
+						}
 					case "elasticsearch.events.processed":
-						assertCounter(m, 3, attribute.NewSet(attribute.String("status", status), semconv.HTTPResponseStatusCode(sc)))
+						asserted.Add(1)
+						indexerAttrs := attribute.NewSet(
+							attribute.String("status", status),
+							semconv.HTTPResponseStatusCode(sc),
+						)
+						counter := m.Data.(metricdata.Sum[int64])
+						for _, dp := range counter.DataPoints {
+							metricdatatest.AssertHasAttributes(t, dp, indexerAttrs.ToSlice()...)
+							status, exist := dp.Attributes.Value(attribute.Key("status"))
+							assert.True(t, exist)
+							switch status.AsString() {
+							case "FailedClient":
+								assert.Equal(t, int64(docs), dp.Value)
+							case "FailedServer":
+								assert.Equal(t, int64(docs), dp.Value)
+							case "TooMany":
+								assert.Equal(t, int64(docs), dp.Value)
+							default:
+								assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+							}
+						}
 					}
 				})
-				assert.Equal(t, int64(1), asserted.Load())
+				assert.Equal(t, int64(7), asserted.Load())
 			})
 		}
 	}
@@ -1271,17 +1419,38 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.CumulativeTemporality
+		},
+	))
+
 	documentBufferSize := 100
 	indexer, err := docappender.New(client, docappender.Config{
 		// Set FlushBytes to 1 so a single document causes a flush.
 		FlushBytes:         1,
 		DocumentBufferSize: documentBufferSize,
+		MeterProvider:      sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 	})
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+	var availableBulkRequests int
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		if m.Name == "elasticsearch.bulk_requests.available" {
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				availableBulkRequests = int(dp.Value)
+			}
+		}
+	})
+
 	// Fill up all the bulk requests and the buffered channel.
-	for n := indexer.Stats().AvailableBulkRequests + int64(documentBufferSize); n >= 0; n-- {
+	for n := int64(availableBulkRequests) + int64(documentBufferSize); n >= 0; n-- {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
@@ -1386,9 +1555,8 @@ func TestAppenderUnknownResponseFields(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// This test ensures that all the channel items are consumed and indexed when the indexer is closed.
 func TestAppenderCloseBusyIndexer(t *testing.T) {
-	// This test ensures that all the channel items are consumed and indexed
-	// when the indexer is closed.
 	var bytesTotal int64
 	var bytesUncompressedTotal int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1397,7 +1565,16 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		bytesUncompressedTotal = stat.UncompressedBytes
 		json.NewEncoder(w).Encode(result)
 	})
-	indexer, err := docappender.New(client, docappender.Config{})
+
+	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
+		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+			return metricdata.CumulativeTemporality
+		},
+	))
+
+	indexer, err := docappender.New(client, docappender.Config{
+		MeterProvider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { indexer.Close(context.Background()) })
 
@@ -1408,15 +1585,50 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 
 	assert.NoError(t, indexer.Close(context.Background()))
 
-	assert.Equal(t, docappender.Stats{
-		Added:                  N,
-		Indexed:                N,
-		BulkRequests:           1,
-		BytesTotal:             bytesTotal,
-		BytesUncompressedTotal: bytesUncompressedTotal,
-		AvailableBulkRequests:  10,
-		IndexersActive:         0,
-	}, indexer.Stats())
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
+		switch n := m.Name; n {
+		case "elasticsearch.events.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(N), dp.Value)
+			}
+		case "elasticsearch.events.processed":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				status, exist := dp.Attributes.Value(attribute.Key("status"))
+				assert.True(t, exist)
+				switch status.AsString() {
+				case "Success":
+					assert.Equal(t, int64(N), dp.Value)
+				default:
+					assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+				}
+			}
+		case "elasticsearch.bulk_requests.count":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(1), dp.Value)
+			}
+		case "elasticsearch.bulk_requests.available":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(10), dp.Value)
+			}
+		case "elasticsearch.flushed.bytes":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(bytesTotal), dp.Value)
+			}
+		case "elasticsearch.flushed.uncompressed.bytes":
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				assert.Equal(t, int64(bytesUncompressedTotal), dp.Value)
+			}
+		}
+	})
 }
 
 func TestAppenderPipeline(t *testing.T) {
