@@ -285,7 +285,37 @@ func TestAppenderRetry(t *testing.T) {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
-	<-time.After(10 * time.Millisecond)
+	bulkRequests := func() int64 {
+		var rm metricdata.ResourceMetrics
+		assert.NoError(t, rdr.Collect(context.Background(), &rm))
+
+		var res int64
+		for _, m := range rm.ScopeMetrics[0].Metrics {
+			if m.Name == "elasticsearch.bulk_requests.count" {
+				counter := m.Data.(metricdata.Sum[int64])
+				for _, dp := range counter.DataPoints {
+					res += dp.Value
+				}
+			}
+		}
+
+		return res
+	}
+	timeout := time.After(4 * time.Second)
+loop:
+	for {
+		select {
+		case <-time.After(10 * time.Millisecond):
+			// Because the internal channel is buffered to increase performance,
+			// the available indexer may not take documents right away, loop until
+			// the available bulk requests has been lowered.
+			if bulkRequests() == 1 {
+				break loop
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
+		}
+	}
 
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
@@ -340,7 +370,7 @@ func TestAppenderRetry(t *testing.T) {
 		case "elasticsearch.events.count":
 			assertCounter(m, N, indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(m, 2, indexerAttrs)
+			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
 			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.events.processed":
@@ -354,9 +384,9 @@ func TestAppenderRetry(t *testing.T) {
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(m, 0, indexerAttrs)
 		case "elasticsearch.flushed.bytes":
-			assertCounter(m, 792, indexerAttrs)
+			assertCounter(m, bytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
-			assertCounter(m, 792, indexerAttrs)
+			assertCounter(m, bytesUncompressed, indexerAttrs)
 		case "elasticsearch.buffer.latency", "elasticsearch.flushed.latency":
 			// expect this metric name but no assertions done
 			// as it's histogram and it's checked elsewhere
@@ -1764,7 +1794,7 @@ func TestAppenderScaling(t *testing.T) {
 		for a.IndexersActive() < n {
 			require.LessOrEqual(t, a.IndexersActive(), limit)
 			select {
-			case <-time.After(1000 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond):
 			case <-timeout.C:
 				require.GreaterOrEqual(t, a.IndexersActive(), n)
 			}
