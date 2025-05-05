@@ -222,6 +222,10 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 	return nil
 }
 
+func (a *Appender) IndexersActive() int64 {
+	return a.scalingInformation().activeIndexers
+}
+
 func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
 	// legacy metric
 	if lm != nil {
