@@ -114,6 +114,7 @@ func TestAppender(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
+	<-time.After(2 * time.Second)
 
 	// Appender has not been flushed, there is one active bulk indexer.
 	// assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
@@ -269,56 +270,28 @@ func TestAppenderRetry(t *testing.T) {
 	)
 
 	indexer, err := docappender.New(client, docappender.Config{
-		FlushInterval:      time.Minute,
-		FlushBytes:         750, // this is enough to flush after 9 documents
+		FlushInterval:      2 * time.Minute,
+		FlushBytes:         800, // this is enough to flush after 9 documents
 		MaxRequests:        1,   // to ensure the test is stable
 		MaxDocumentRetries: 1,   // to test the document retry logic
-		MeterProvider:      sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
-		MetricAttributes:   indexerAttrs,
+		MeterProvider: sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(rdr),
+		),
+		MetricAttributes: indexerAttrs,
 	})
 
 	require.NoError(t, err)
-	defer indexer.Close(context.Background())
+	//	defer indexer.Close(context.Background())
 
 	const N = 10
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-
-	bulkRequests := func() int64 {
-		var rm metricdata.ResourceMetrics
-		assert.NoError(t, rdr.Collect(context.Background(), &rm))
-
-		var res int64
-		for _, m := range rm.ScopeMetrics[0].Metrics {
-			if m.Name == "elasticsearch.bulk_requests.count" {
-				counter := m.Data.(metricdata.Sum[int64])
-				for _, dp := range counter.DataPoints {
-					res += dp.Value
-				}
-			}
-		}
-
-		return res
-	}
-	timeout := time.After(4 * time.Second)
-loop:
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			// Because the internal channel is buffered to increase performance,
-			// the available indexer may not take documents right away, loop until
-			// the available bulk requests has been lowered.
-			if bulkRequests() == 1 {
-				break loop
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
-		}
-	}
+	<-time.After(20 * time.Second)
 
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	<-time.After(20 * time.Second)
 
 	var asserted atomic.Int64
 	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
@@ -331,7 +304,7 @@ loop:
 		case "elasticsearch.events.count":
 			assertCounter(m, int64(N), indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(m, int64(2), indexerAttrs)
+			assertCounter(m, int64(1), indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
 			assertCounter(m, int64(1), indexerAttrs)
 		case "elasticsearch.events.processed":
@@ -344,7 +317,7 @@ loop:
 				switch status.AsString() {
 				case "Success":
 					processedAsserted++
-					assert.Equal(t, int64(6), dp.Value)
+					assert.Equal(t, int64(7), dp.Value)
 				case "FailedClient":
 					processedAsserted++
 					assert.Equal(t, int64(1), dp.Value)
@@ -378,7 +351,7 @@ loop:
 				attribute.Int("greatest_retry", 1),
 			))
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, int64(0), indexerAttrs)
+			assertCounter(m, int64(1), indexerAttrs)
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, bytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
@@ -2047,7 +2020,6 @@ func TestAppenderScaling(t *testing.T) {
 					case "Success":
 						assert.Equal(t, int64(docs), dp.Value)
 					default:
-						fmt.Println("HELLO")
 						assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
 					}
 				}

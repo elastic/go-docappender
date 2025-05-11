@@ -306,10 +306,11 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		// Bulk indexing may fail with different status codes.
 		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
+			var legacy *int64
 			var status string
 			switch {
 			case errFailed.tooMany:
-				status = "TooMany"
+				legacy, status = &a.tooManyRequests, "TooMany"
 			case errFailed.clientError:
 				status = "FailedClient"
 			case errFailed.serverError:
@@ -318,7 +319,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			if status != "" {
 				a.addCount(
 					int64(n),
-					nil,
+					legacy,
 					a.metrics.docsIndexed,
 					metric.WithAttributes(attribute.String("status", status), semconv.HTTPResponseStatusCode(errFailed.statusCode)),
 				)
