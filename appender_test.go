@@ -323,58 +323,54 @@ loop:
 	var asserted atomic.Int64
 	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 
-	var processedAsserted int
-	assertProcessedCounter := func(metric metricdata.Metrics, value int, attrs attribute.Set) {
-		asserted.Add(1)
-		counter := metric.Data.(metricdata.Sum[int64])
-		for _, dp := range counter.DataPoints {
-			metricdatatest.AssertHasAttributes(t, dp, attrs.ToSlice()...)
-			status, exist := dp.Attributes.Value(attribute.Key("status"))
-			assert.True(t, exist)
-			switch status.AsString() {
-			case "Success":
-				processedAsserted++
-				assert.Equal(t, int64(value), dp.Value)
-			case "FailedClient":
-				processedAsserted++
-				assert.Equal(t, int64(1), dp.Value)
-			case "FailedServer":
-				processedAsserted++
-				assert.Equal(t, int64(1), dp.Value)
-			case "TooMany":
-				processedAsserted++
-				assert.Equal(t, int64(1), dp.Value)
-			case "FailureStore":
-				processedAsserted++
-				fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
-				assert.True(t, exist)
-				assert.Contains(
-					t,
-					[]docappender.FailureStoreStatus{
-						docappender.FailureStoreStatusUsed,
-						docappender.FailureStoreStatusFailed,
-						docappender.FailureStoreStatusNotEnabled,
-					},
-					docappender.FailureStoreStatus(fs.AsString()),
-				)
-			default:
-				assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
-			}
-		}
-	}
-
 	// Check the set of names and then check the counter or histogram.
+	var processedAsserted int
 	unexpectedMetrics := []string{}
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 		switch m.Name {
 		case "elasticsearch.events.count":
-			assertCounter(m, N, indexerAttrs)
+			assertCounter(m, int64(N), indexerAttrs)
 		case "elasticsearch.events.queued":
-			assertCounter(m, 1, indexerAttrs)
+			assertCounter(m, int64(2), indexerAttrs)
 		case "elasticsearch.bulk_requests.count":
-			assertCounter(m, 1, indexerAttrs)
+			assertCounter(m, int64(1), indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertProcessedCounter(m, 6, indexerAttrs)
+			asserted.Add(1)
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				metricdatatest.AssertHasAttributes(t, dp, indexerAttrs.ToSlice()...)
+				status, exist := dp.Attributes.Value(attribute.Key("status"))
+				assert.True(t, exist)
+				switch status.AsString() {
+				case "Success":
+					processedAsserted++
+					assert.Equal(t, int64(6), dp.Value)
+				case "FailedClient":
+					processedAsserted++
+					assert.Equal(t, int64(1), dp.Value)
+				case "FailedServer":
+					processedAsserted++
+					assert.Equal(t, int64(1), dp.Value)
+				case "TooMany":
+					processedAsserted++
+					assert.Equal(t, int64(1), dp.Value)
+				case "FailureStore":
+					processedAsserted++
+					fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
+					assert.True(t, exist)
+					assert.Contains(
+						t,
+						[]docappender.FailureStoreStatus{
+							docappender.FailureStoreStatusUsed,
+							docappender.FailureStoreStatusFailed,
+							docappender.FailureStoreStatusNotEnabled,
+						},
+						docappender.FailureStoreStatus(fs.AsString()),
+					)
+				default:
+					assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+				}
+			}
 		case "elasticsearch.events.retried":
 			assertCounter(m, 1, attribute.NewSet(
 				attribute.String("a", "b"),
@@ -382,7 +378,7 @@ loop:
 				attribute.Int("greatest_retry", 1),
 			))
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, 0, indexerAttrs)
+			assertCounter(m, int64(0), indexerAttrs)
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, bytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
@@ -415,7 +411,37 @@ loop:
 		case "elasticsearch.events.queued":
 			assertCounter(m, int64(0), indexerAttrs)
 		case "elasticsearch.events.processed":
-			assertProcessedCounter(m, 8, indexerAttrs) // 2 failed
+			asserted.Add(1)
+			counter := m.Data.(metricdata.Sum[int64])
+			for _, dp := range counter.DataPoints {
+				metricdatatest.AssertHasAttributes(t, dp, indexerAttrs.ToSlice()...)
+				status, exist := dp.Attributes.Value(attribute.Key("status"))
+				assert.True(t, exist)
+				switch status.AsString() {
+				case "Success":
+					assert.Equal(t, int64(8), dp.Value)
+				case "FailedClient":
+					assert.Equal(t, int64(1), dp.Value)
+				case "FailedServer":
+					assert.Equal(t, int64(1), dp.Value)
+				case "TooMany":
+					assert.Equal(t, int64(1), dp.Value)
+				case "FailureStore":
+					fs, exist := dp.Attributes.Value(attribute.Key("failure_store"))
+					assert.True(t, exist)
+					assert.Contains(
+						t,
+						[]docappender.FailureStoreStatus{
+							docappender.FailureStoreStatusUsed,
+							docappender.FailureStoreStatusFailed,
+							docappender.FailureStoreStatusNotEnabled,
+						},
+						docappender.FailureStoreStatus(fs.AsString()),
+					)
+				default:
+					assert.FailNow(t, "Unexpected metric with status: "+status.AsString())
+				}
+			}
 		case "elasticsearch.bulk_requests.available":
 			assertCounter(m, int64(1), indexerAttrs)
 		case "elasticsearch.flushed.bytes":
