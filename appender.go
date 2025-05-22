@@ -126,7 +126,8 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	// Register the Appender ID in the pool.
 	indexer.id = fmt.Sprintf("%p", indexer)
 	indexer.pool.Register(indexer.id)
-	indexer.addUpDownCount(int64(cfg.MaxRequests), ms.availableBulkRequests)
+	attrs := metric.WithAttributeSet(indexer.config.MetricAttributes)
+	indexer.metrics.availableBulkRequests.Add(context.Background(), int64(cfg.MaxRequests), attrs)
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
 	// because one flush failure should not cause the context to be cancelled.
@@ -226,18 +227,13 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 	a.docsAdded.Add(1)
 	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
 	a.metrics.docsAdded.Add(context.Background(), 1, attrs)
+	a.metrics.docsActive.Add(context.Background(), 1, attrs)
 
-	a.addUpDownCount(1, a.metrics.docsActive)
 	return nil
 }
 
 func (a *Appender) IndexersActive() int64 {
 	return a.scalingInformation().activeIndexers
-}
-
-func (a *Appender) addUpDownCount(delta int64, m metric.Int64UpDownCounter, opts ...metric.AddOption) {
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	m.Add(context.Background(), delta, append(opts, attrs)...)
 }
 
 func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
@@ -291,7 +287,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.metrics.bytesUncompressedTotal.Add(context.Background(), int64(flushed), attrs)
 	}
 	if err != nil {
-		a.addUpDownCount(-int64(n), a.metrics.docsActive)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.docsActive.Add(context.Background(), -int64(n), attrs)
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
@@ -350,7 +347,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	docsFailed = int64(len(resp.FailedDocs))
 	totalFlushed := docsFailed + docsIndexed
-	a.addUpDownCount(-totalFlushed, a.metrics.docsActive)
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	a.metrics.docsActive.Add(context.Background(), -totalFlushed, attrs)
 	for _, info := range resp.FailedDocs {
 		if info.Status >= 400 && info.Status < 500 {
 			if info.Status == http.StatusTooManyRequests {
@@ -498,8 +496,9 @@ func (a *Appender) runActiveIndexer() {
 			// to reset it to ensure we're using the right client.
 			active.SetClient(a.client)
 
-			a.addUpDownCount(-1, a.metrics.availableBulkRequests)
-			a.addUpDownCount(1, a.metrics.inflightBulkrequests)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.availableBulkRequests.Add(context.Background(), -1, attrs)
+			a.metrics.inflightBulkrequests.Add(context.Background(), 1, attrs)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.Add(item); err != nil {
@@ -564,8 +563,9 @@ func (a *Appender) runActiveIndexer() {
 				})
 				indexer.Reset()
 				a.pool.Put(a.id, indexer)
-				a.addUpDownCount(1, a.metrics.availableBulkRequests)
-				a.addUpDownCount(-1, a.metrics.inflightBulkrequests, attrs)
+				attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+				a.metrics.availableBulkRequests.Add(context.Background(), 1, attrs)
+				a.metrics.inflightBulkrequests.Add(context.Background(), -1, attrs)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)
