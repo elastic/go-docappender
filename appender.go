@@ -60,8 +60,9 @@ var (
 // Up to `config.MaxRequests` bulk requests may be flushing/active concurrently, to allow the
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
-	docsAdded       int64
-	tooManyRequests int64
+	// Used internally to calculate indexFailureRate for scaling reasons only.
+	docsAdded       atomic.Int64
+	tooManyRequests atomic.Int64
 
 	scalingInfo atomic.Value
 
@@ -207,7 +208,11 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Body:  document,
 	}
 	if len(a.bulkItems) == cap(a.bulkItems) {
-		a.addCount(1, nil, a.metrics.blockedAdd)
+		a.metrics.blockedAdd.Add(
+			context.Background(),
+			1,
+			metric.WithAttributeSet(a.config.MetricAttributes),
+		)
 	}
 
 	select {
@@ -217,23 +222,17 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
+
+	a.docsAdded.Add(1)
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	a.metrics.docsAdded.Add(context.Background(), 1, attrs)
+
 	a.addUpDownCount(1, a.metrics.docsActive)
 	return nil
 }
 
 func (a *Appender) IndexersActive() int64 {
 	return a.scalingInformation().activeIndexers
-}
-
-func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
-	// legacy metric
-	if lm != nil {
-		atomic.AddInt64(lm, delta)
-	}
-
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	m.Add(context.Background(), delta, append(opts, attrs)...)
 }
 
 func (a *Appender) addUpDownCount(delta int64, m metric.Int64UpDownCounter, opts ...metric.AddOption) {
@@ -246,7 +245,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if n == 0 {
 		return nil
 	}
-	defer a.addCount(1, nil, a.metrics.bulkRequests)
+	defer func() {
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bulkRequests.Add(context.Background(), 1, attrs)
+	}()
 
 	logger := a.config.Logger
 	var span trace.Span
@@ -279,12 +281,14 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), nil, a.metrics.bytesTotal)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bytesTotal.Add(context.Background(), int64(flushed), attrs)
 	}
 	// Record the BulkIndexer uncompressed bytes written to the buffer
 	// as the bytesUncompressedTotal metric after the request has been flushed.
 	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), nil, a.metrics.bytesUncompressedTotal)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bytesUncompressedTotal.Add(context.Background(), int64(flushed), attrs)
 	}
 	if err != nil {
 		a.addUpDownCount(-int64(n), a.metrics.docsActive)
@@ -295,33 +299,38 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			a.addCount(
+			a.metrics.docsIndexed.Add(
+				context.Background(),
 				int64(n),
-				nil,
-				a.metrics.docsIndexed,
 				metric.WithAttributes(attribute.String("status", "Timeout")),
+				metric.WithAttributeSet(a.config.MetricAttributes),
 			)
 		}
 
 		// Bulk indexing may fail with different status codes.
 		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
-			var legacy *int64
+			var legacy int64
 			var status string
 			switch {
 			case errFailed.tooMany:
-				legacy, status = &a.tooManyRequests, "TooMany"
+				legacy = a.tooManyRequests.Load()
+				status = "TooMany"
 			case errFailed.clientError:
 				status = "FailedClient"
 			case errFailed.serverError:
 				status = "FailedServer"
 			}
 			if status != "" {
-				a.addCount(
+				a.tooManyRequests.Add(legacy)
+				a.metrics.docsIndexed.Add(
+					context.Background(),
 					int64(n),
-					legacy,
-					a.metrics.docsIndexed,
-					metric.WithAttributes(attribute.String("status", status), semconv.HTTPResponseStatusCode(errFailed.statusCode)),
+					metric.WithAttributes(
+						attribute.String("status", status),
+						semconv.HTTPResponseStatusCode(errFailed.statusCode),
+					),
+					metric.WithAttributeSet(a.config.MetricAttributes),
 				)
 			}
 		}
@@ -368,76 +377,77 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	if resp.RetriedDocs > 0 {
 		// docs are scheduled to be retried but not yet failed due to retry limit
-		a.addCount(
+		a.metrics.docsRetried.Add(
+			context.Background(),
 			resp.RetriedDocs,
-			nil,
-			a.metrics.docsRetried,
+			metric.WithAttributeSet(a.config.MetricAttributes),
 			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
 		)
 	}
 	if docsIndexed > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			docsIndexed,
-			nil,
-			a.metrics.docsIndexed,
+			metric.WithAttributeSet(a.config.MetricAttributes),
 			metric.WithAttributes(attribute.String("status", "Success")),
 		)
 	}
 	if tooManyRequests > 0 {
-		a.addCount(
+		a.tooManyRequests.Add(tooManyRequests)
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			tooManyRequests,
-			&a.tooManyRequests,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "TooMany")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if clientFailed > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			clientFailed,
-			nil,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "FailedClient")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if serverFailed > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			serverFailed,
-			nil,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if failureStoreDocs.Used > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			failureStoreDocs.Used,
-			nil,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusUsed)),
 			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if failureStoreDocs.Failed > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			failureStoreDocs.Failed,
-			nil,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusFailed)),
 			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if failureStoreDocs.NotEnabled > 0 {
-		a.addCount(
+		a.metrics.docsIndexed.Add(
+			context.Background(),
 			failureStoreDocs.NotEnabled,
-			nil,
-			a.metrics.docsIndexed,
 			metric.WithAttributes(
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
 			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	logger.Debug(
@@ -571,11 +581,13 @@ func (a *Appender) runActiveIndexer() {
 		now := time.Now()
 		info := a.scalingInformation()
 		if a.maybeScaleDown(now, info, &timedFlush) {
-			a.addCount(1, nil, a.metrics.activeDestroyed)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.activeDestroyed.Add(context.Background(), 1, attrs)
 			return
 		}
 		if a.maybeScaleUp(now, info, &fullFlush) {
-			a.addCount(1, nil, a.metrics.activeCreated)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.activeCreated.Add(context.Background(), 1, attrs)
 			a.errgroup.Go(func() error {
 				a.runActiveIndexer()
 				return nil
@@ -696,8 +708,7 @@ func (a *Appender) scalingInformation() scalingInfo {
 
 // indexFailureRate returns the decimal percentage of 429 / total docs.
 func (a *Appender) indexFailureRate() float64 {
-	return float64(atomic.LoadInt64(&a.tooManyRequests)) /
-		float64(atomic.LoadInt64(&a.docsAdded))
+	return float64(a.tooManyRequests.Load()) / float64(a.docsAdded.Load())
 }
 
 // otelTracingEnabled checks whether we should be doing tracing
