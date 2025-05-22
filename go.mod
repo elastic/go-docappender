@@ -8,7 +8,7 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/stretchr/testify v1.10.0
 	go.elastic.co/apm/module/apmelasticsearch/v2 v2.6.3
-	go.elastic.co/fastjson v1.4.0
+	go.elastic.co/fastjson v1.5.1
 	go.opentelemetry.io/otel v1.36.0
 	go.opentelemetry.io/otel/metric v1.36.0
 	go.opentelemetry.io/otel/sdk v1.36.0
