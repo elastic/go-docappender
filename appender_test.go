@@ -97,8 +97,7 @@ func TestAppender(t *testing.T) {
 	))
 
 	indexerAttrs := attribute.NewSet(
-		attribute.String("a", "b"),
-		attribute.String("c", "d"),
+		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
 	indexer, err := docappender.New(client, docappender.Config{
@@ -114,7 +113,7 @@ func TestAppender(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-	<-time.After(2 * time.Second)
+	<-time.After(1 * time.Second)
 
 	// Appender has not been flushed, there is one active bulk indexer.
 	// assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
@@ -228,7 +227,6 @@ func TestAppenderRetry(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	var first atomic.Bool
-
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
@@ -265,33 +263,29 @@ func TestAppenderRetry(t *testing.T) {
 	))
 
 	indexerAttrs := attribute.NewSet(
-		attribute.String("a", "b"),
-		attribute.String("c", "d"),
+		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
 	indexer, err := docappender.New(client, docappender.Config{
-		FlushInterval:      2 * time.Minute,
+		FlushInterval:      time.Minute,
 		FlushBytes:         800, // this is enough to flush after 9 documents
 		MaxRequests:        1,   // to ensure the test is stable
 		MaxDocumentRetries: 1,   // to test the document retry logic
-		MeterProvider: sdkmetric.NewMeterProvider(
-			sdkmetric.WithReader(rdr),
-		),
-		MetricAttributes: indexerAttrs,
+		MeterProvider:      sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
+		MetricAttributes:   indexerAttrs,
 	})
 
 	require.NoError(t, err)
-	//	defer indexer.Close(context.Background())
+	defer indexer.Close(context.Background())
 
 	const N = 10
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-	<-time.After(20 * time.Second)
+	<-time.After(1 * time.Second)
 
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
-	<-time.After(20 * time.Second)
 
 	var asserted atomic.Int64
 	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
@@ -454,7 +448,6 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-
 	timeout := time.NewTimer(2 * time.Second)
 	defer timeout.Stop()
 	for i := 0; i < N; i++ {
@@ -878,7 +871,6 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 				// Closing the indexer flushes enqueued documents.
 				err = indexer.Close(context.Background())
-
 				switch includeSource {
 				case docappender.False, docappender.True:
 					// include_source=false is implemented in ES so we just assert we're not
@@ -1774,7 +1766,6 @@ func TestAppenderScaling(t *testing.T) {
 		t.Cleanup(func() { indexer.Close(context.Background()) })
 		return indexer
 	}
-
 	sendDocuments := func(t *testing.T, indexer *docappender.Appender, docs int) {
 		for i := 0; i < docs; i++ {
 			err := indexer.Add(context.Background(), "logs-foo-testing", newJSONReader(map[string]any{
@@ -1866,7 +1857,6 @@ func TestAppenderScaling(t *testing.T) {
 			}
 		}
 	}
-
 	t.Run("DownscaleIdle", func(t *testing.T) {
 		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 			func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
@@ -1893,7 +1883,6 @@ func TestAppenderScaling(t *testing.T) {
 		})
 		docs := int64(20)
 		sendDocuments(t, indexer, int(docs))
-
 		waitForScaleUp(t, indexer, 3)
 		waitForScaleDown(t, indexer, rdr, 1)
 
@@ -1954,7 +1943,6 @@ func TestAppenderScaling(t *testing.T) {
 			}
 		})
 	})
-
 	t.Run("DownscaleActiveLimit", func(t *testing.T) {
 		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 			func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
@@ -1982,11 +1970,9 @@ func TestAppenderScaling(t *testing.T) {
 		})
 		docs := int64(14)
 		sendDocuments(t, indexer, int(docs))
-
 		waitForScaleUp(t, indexer, 3)
 		// Set the gomaxprocs to 4, which should result in an activeLimit of 1.
 		setGOMAXPROCS(t, 4)
-
 		// Wait for the indexers to scale down from 3 to 1. The downscale cool
 		// down of `1m` isn't respected, since the active limit is breached with
 		// the gomaxprocs change.
@@ -2051,7 +2037,6 @@ func TestAppenderScaling(t *testing.T) {
 			}
 		})
 	})
-
 	t.Run("UpscaleCooldown", func(t *testing.T) {
 		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 			func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
@@ -2079,12 +2064,9 @@ func TestAppenderScaling(t *testing.T) {
 		})
 		docs := int64(50)
 		sendDocuments(t, indexer, int(docs))
-
 		waitForScaleUp(t, indexer, 2)
 		waitForBulkRequests(t, indexer, rdr, docs)
-
 		assert.Equal(t, int64(2), indexer.IndexersActive())
-
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		assert.NoError(t, indexer.Close(ctx))
@@ -2144,7 +2126,6 @@ func TestAppenderScaling(t *testing.T) {
 			}
 		})
 	})
-
 	t.Run("Downscale429Rate", func(t *testing.T) {
 		rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 			func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
@@ -2177,12 +2158,10 @@ func TestAppenderScaling(t *testing.T) {
 			FlushBytes:    1,
 			Scaling: docappender.ScalingConfig{
 				ScaleUp: docappender.ScaleActionConfig{
-					Threshold: 5,
-					CoolDown:  1,
+					Threshold: 5, CoolDown: 1,
 				},
 				ScaleDown: docappender.ScaleActionConfig{
-					Threshold: 100,
-					CoolDown:  100 * time.Millisecond,
+					Threshold: 100, CoolDown: 100 * time.Millisecond,
 				},
 				IdleInterval: 100 * time.Millisecond,
 			},
@@ -2190,10 +2169,8 @@ func TestAppenderScaling(t *testing.T) {
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { indexer.Close(context.Background()) })
-
 		docs := int64(20)
 		sendDocuments(t, indexer, int(docs))
-
 		waitForScaleUp(t, indexer, 3)
 		waitForBulkRequests(t, indexer, rdr, docs)
 
@@ -2204,7 +2181,6 @@ func TestAppenderScaling(t *testing.T) {
 		mu.Unlock()
 		docs += 5
 		sendDocuments(t, indexer, 5)
-
 		waitForScaleDown(t, indexer, rdr, 1)
 		waitForBulkRequests(t, indexer, rdr, docs)
 
@@ -2215,15 +2191,11 @@ func TestAppenderScaling(t *testing.T) {
 		mu.Unlock()
 		docs += 600
 		sendDocuments(t, indexer, 600)
-
 		waitForScaleUp(t, indexer, 3)
 		waitForBulkRequests(t, indexer, rdr, docs)
-
 		assert.Equal(t, int64(3), indexer.IndexersActive())
-
 		var rm metricdata.ResourceMetrics
 		assert.NoError(t, rdr.Collect(context.Background(), &rm))
-
 		docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 			switch n := m.Name; n {
 			case "elasticsearch.indexer.created":

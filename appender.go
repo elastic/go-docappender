@@ -113,7 +113,6 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	if err := BulkIndexerConfigFrom(client, cfg).Validate(); err != nil {
 		return nil, fmt.Errorf("error creating bulk indexer: %w", err)
 	}
-
 	indexer := &Appender{
 		pool:      cfg.BulkIndexerPool,
 		config:    cfg,
@@ -209,11 +208,8 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Body:  document,
 	}
 	if len(a.bulkItems) == cap(a.bulkItems) {
-		a.metrics.blockedAdd.Add(
-			context.Background(),
-			1,
-			metric.WithAttributeSet(a.config.MetricAttributes),
-		)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.blockedAdd.Add(context.Background(), 1, attrs)
 	}
 
 	select {
