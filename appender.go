@@ -90,6 +90,7 @@ type Appender struct {
 	mu                    sync.Mutex
 	closed                chan struct{}
 	onConsume             func()
+	onFlush               func()
 
 	// tracer is an OTel tracer, and should not be confused with `a.config.Tracer`
 	// which is an Elastic APM Tracer.
@@ -134,6 +135,7 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 		onConsume: cfg.OnConsume,
+		onFlush:   cfg.OnFlush,
 	}
 	// Use the Appender's pointer as the unique ID for the BulkIndexerPool.
 	// Register the Appender ID in the pool.
@@ -577,9 +579,14 @@ func (a *Appender) runActiveIndexer() {
 				a.pool.Put(a.id, indexer)
 				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 				a.addUpDownCount(-1, nil, a.metrics.inflightBulkrequests, attrs)
-				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
+				a.metrics.flushDuration.Record(
+					context.Background(),
+					took.Seconds(),
 					attrs,
 				)
+				if a.onFlush != nil {
+					a.onFlush()
+				}
 				return err
 			})
 			a.metrics.bufferDuration.Record(context.Background(),

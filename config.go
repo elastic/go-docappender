@@ -160,6 +160,8 @@ type Config struct {
 	MetricAttributes attribute.Set
 
 	OnConsume func()
+
+	OnFlush func()
 }
 
 // DefaultConfig returns a copy of cfg with any zero values set to their
