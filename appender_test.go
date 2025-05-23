@@ -432,7 +432,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.CumulativeTemporality
+			return metricdata.DeltaTemporality
 		},
 	))
 
@@ -573,7 +573,7 @@ func TestAppenderCompressionLevel(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.CumulativeTemporality
+			return metricdata.DeltaTemporality
 		},
 	))
 
@@ -851,7 +851,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 
 				rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 					func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-						return metricdata.CumulativeTemporality
+						return metricdata.DeltaTemporality
 					},
 				))
 
@@ -1443,7 +1443,7 @@ func TestAppenderCloseInterruptAdd(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.CumulativeTemporality
+			return metricdata.DeltaTemporality
 		},
 	))
 
@@ -1589,7 +1589,7 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 		func(ik sdkmetric.InstrumentKind) metricdata.Temporality {
-			return metricdata.CumulativeTemporality
+			return metricdata.DeltaTemporality
 		},
 	))
 
