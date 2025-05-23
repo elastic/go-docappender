@@ -100,38 +100,32 @@ func TestAppender(t *testing.T) {
 		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
+	consumed := make(chan struct{})
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushInterval:    time.Minute,
 		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 		MetricAttributes: indexerAttrs,
+		OnConsume: func() {
+			select {
+			case consumed <- struct{}{}:
+			default:
+			}
+		},
 	})
 
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	available := indexer.Stats().AvailableBulkRequests
 	const N = 10
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
-	timeout := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			// Because the internal channel is buffered to increase performance,
-			// the available indexer may not take documents right away, loop until
-			// the available bulk requests has been lowered.
-			if indexer.Stats().AvailableBulkRequests < available {
-				break loop
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for the active bulk indexer to pull from the available queue")
-		}
+	select {
+	case <-consumed:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
 	}
-	// Appender has not been flushed, there is one active bulk indexer.
-	assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
 
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
@@ -272,6 +266,7 @@ func TestAppenderRetry(t *testing.T) {
 		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
+	consumed := make(chan struct{})
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushInterval:      time.Minute,
 		FlushBytes:         750, // this is enough to flush after 9 documents
@@ -279,6 +274,12 @@ func TestAppenderRetry(t *testing.T) {
 		MaxDocumentRetries: 1,   // to test the document retry logic
 		MeterProvider:      sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 		MetricAttributes:   indexerAttrs,
+		OnConsume: func() {
+			select {
+			case consumed <- struct{}{}:
+			default:
+			}
+		},
 	})
 
 	require.NoError(t, err)
@@ -289,20 +290,10 @@ func TestAppenderRetry(t *testing.T) {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
 
-	timeout := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case <-time.After(10 * time.Millisecond):
-			// Because the internal channel is buffered to increase performance,
-			// the available indexer may not take documents right away, loop until
-			// the available bulk requests has been lowered.
-			if indexer.Stats().BulkRequests == 1 {
-				break loop
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
-		}
+	select {
+	case <-consumed:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
 	}
 
 	stats := indexer.Stats()

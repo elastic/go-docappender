@@ -158,6 +158,8 @@ type Config struct {
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
 	MetricAttributes attribute.Set
+
+	OnConsume func()
 }
 
 // DefaultConfig returns a copy of cfg with any zero values set to their
