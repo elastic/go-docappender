@@ -159,8 +159,10 @@ type Config struct {
 	// metrics.
 	MetricAttributes attribute.Set
 
+	// OnConsume is a hook that will execute after a bulk item has been handled.
 	OnConsume func()
 
+	// OnFlush is a hook that will execute after a flush happens.
 	OnFlush func()
 }
 
