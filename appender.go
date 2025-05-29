@@ -303,11 +303,10 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		// Bulk indexing may fail with different status codes.
 		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
-			var legacy int64
 			var status string
 			switch {
 			case errFailed.tooMany:
-				legacy = a.tooManyRequests.Load()
+				a.tooManyRequests.Add(a.tooManyRequests.Load())
 				status = "TooMany"
 			case errFailed.clientError:
 				status = "FailedClient"
@@ -315,7 +314,6 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 				status = "FailedServer"
 			}
 			if status != "" {
-				a.tooManyRequests.Add(legacy)
 				a.metrics.docsIndexed.Add(
 					context.Background(),
 					int64(n),
