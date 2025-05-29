@@ -122,7 +122,7 @@ func TestAppender(t *testing.T) {
 
 	// Collect metrics before flushing.
 	var rm metricdata.ResourceMetrics
-	assert.NoError(t, rdr.Collect(context.Background(), &rm))
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 		switch m.Name {
 		case "elasticsearch.events.count":
