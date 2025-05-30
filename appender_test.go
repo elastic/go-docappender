@@ -106,17 +106,10 @@ func TestAppender(t *testing.T) {
 		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
-	consumed := make(chan struct{})
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushInterval:    time.Minute,
 		MeterProvider:    sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 		MetricAttributes: indexerAttrs,
-		OnConsume: func() {
-			select {
-			case consumed <- struct{}{}:
-			default:
-			}
-		},
 	})
 
 	require.NoError(t, err)
@@ -273,7 +266,6 @@ func TestAppenderRetry(t *testing.T) {
 		attribute.String("a", "b"), attribute.String("c", "d"),
 	)
 
-	flushed := make(chan struct{})
 	indexer, err := docappender.New(client, docappender.Config{
 		FlushInterval:      time.Minute,
 		FlushBytes:         750, // this is enough to flush after 9 documents
@@ -281,12 +273,6 @@ func TestAppenderRetry(t *testing.T) {
 		MaxDocumentRetries: 1,   // to test the document retry logic
 		MeterProvider:      sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr)),
 		MetricAttributes:   indexerAttrs,
-		OnFlush: func() {
-			select {
-			case flushed <- struct{}{}:
-			default:
-			}
-		},
 	})
 
 	require.NoError(t, err)

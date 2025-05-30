@@ -158,12 +158,6 @@ type Config struct {
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
 	MetricAttributes attribute.Set
-
-	// OnConsume is a hook that will execute after a bulk item has been handled.
-	OnConsume func()
-
-	// OnFlush is a hook that will execute after a flush happens.
-	OnFlush func()
 }
 
 // DefaultConfig returns a copy of cfg with any zero values set to their
