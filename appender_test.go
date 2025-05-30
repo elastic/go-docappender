@@ -55,6 +55,7 @@ import (
 func TestAppender(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
+	ch := make(chan struct{})
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Len(t, r.URL.Query(), 1)
 		require.Equal(t, strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","), r.URL.Query().Get("filter_path"))
@@ -88,6 +89,11 @@ func TestAppender(t *testing.T) {
 			}
 		}
 		json.NewEncoder(w).Encode(result)
+		// Wait for metrics to be updated after ES response.
+		go func() {
+			<-time.After(10 * time.Millisecond)
+			ch <- struct{}{}
+		}()
 	})
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
@@ -120,12 +126,7 @@ func TestAppender(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-
-	select {
-	case <-consumed:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
-	}
+	<-ch
 
 	// Closing the indexer flushes enqueued documents.
 	err = indexer.Close(context.Background())
@@ -227,6 +228,7 @@ func TestAppenderRetry(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	var first atomic.Bool
+	ch := make(chan struct{})
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
@@ -254,6 +256,11 @@ func TestAppenderRetry(t *testing.T) {
 			}
 		}
 		json.NewEncoder(w).Encode(result)
+		// Wait for metrics to be updated after ES response.
+		go func() {
+			<-time.After(10 * time.Millisecond)
+			ch <- struct{}{}
+		}()
 	})
 
 	rdr := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
@@ -289,12 +296,7 @@ func TestAppenderRetry(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-
-	select {
-	case <-flushed:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for the active bulk indexer to send one bulk request")
-	}
+	<-ch
 
 	stats := indexer.Stats()
 	var rm metricdata.ResourceMetrics
