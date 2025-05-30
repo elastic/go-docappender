@@ -572,7 +572,9 @@ func (a *Appender) runActiveIndexer() {
 				a.pool.Put(a.id, indexer)
 				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
 				a.addUpDownCount(-1, nil, a.metrics.inflightBulkrequests, attrs)
-				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
+				a.metrics.flushDuration.Record(
+					context.Background(),
+					took.Seconds(),
 					attrs,
 				)
 				return err
