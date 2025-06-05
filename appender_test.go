@@ -113,16 +113,31 @@ func TestAppender(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-	<-time.After(1 * time.Second)
-
-	// Appender has not been flushed, there is one active bulk indexer.
-	// assert.Equal(t, docappender.Stats{Added: N, Active: N, AvailableBulkRequests: 9, IndexersActive: 1}, indexer.Stats())
-	var asserted atomic.Int64
-	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
 
 	// Collect metrics before flushing.
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, rdr.Collect(context.Background(), &rm))
+
+	availableBulkIndexers := int64(10) // default is 10
+	assert.Eventually(t, func() bool {
+		for _, m := range rm.ScopeMetrics[0].Metrics {
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+			if m.Name == "elasticsearch.bulk_requests.available" {
+				counter := m.Data.(metricdata.Sum[int64])
+				for _, dp := range counter.DataPoints {
+					if dp.Value < availableBulkIndexers {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Appender has not been flushed, there is one active bulk indexer.
+	var asserted atomic.Int64
+	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+
 	docappendertest.AssertOTelMetrics(t, rm.ScopeMetrics[0].Metrics, func(m metricdata.Metrics) {
 		switch m.Name {
 		case "elasticsearch.events.count":
@@ -282,13 +297,27 @@ func TestAppenderRetry(t *testing.T) {
 	for i := 0; i < N; i++ {
 		addMinimalDoc(t, indexer, "logs-foo-testing")
 	}
-	<-time.After(1 * time.Second)
 
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, rdr.Collect(context.Background(), &rm))
 
 	var asserted atomic.Int64
 	assertCounter := docappendertest.NewAssertCounter(t, &asserted)
+
+	assert.Eventually(t, func() bool {
+		for _, m := range rm.ScopeMetrics[0].Metrics {
+			assert.NoError(t, rdr.Collect(context.Background(), &rm))
+			if m.Name == "elasticsearch.bulk_requests.count" {
+				counter := m.Data.(metricdata.Sum[int64])
+				for _, dp := range counter.DataPoints {
+					if dp.Value == int64(1) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond)
 
 	// Check the set of names and then check the counter or histogram.
 	var processedAsserted int
