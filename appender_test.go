@@ -1806,34 +1806,27 @@ func TestAppenderScaling(t *testing.T) {
 			require.NoError(t, err)
 		}
 	}
-
-	waitForScaleUp := func(t *testing.T, a *docappender.Appender, n int64) {
+	waitForScaleUp := func(t *testing.T, indexer *docappender.Appender, n int64) {
 		timeout := time.NewTimer(5 * time.Second)
 		limit := int64(runtime.GOMAXPROCS(0) / 4)
-		for a.IndexersActive() < n {
-			require.LessOrEqual(t, a.IndexersActive(), limit)
+		for indexer.IndexersActive() < n {
+			require.LessOrEqual(t, indexer.IndexersActive(), limit)
 			select {
 			case <-time.After(10 * time.Millisecond):
 			case <-timeout.C:
-				require.GreaterOrEqual(t, a.IndexersActive(), n)
+				require.GreaterOrEqual(t, indexer.IndexersActive(), n)
 			}
 		}
-		assert.Greater(t, a.IndexersActive(), int64(0), "No upscales took place")
+		assert.Greater(t, indexer.IndexersActive(), int64(0), "No upscales took place")
 	}
-
-	waitForScaleDown := func(
-		t *testing.T,
-		a *docappender.Appender,
-		rdr *sdkmetric.ManualReader,
-		n int64,
-	) {
+	waitForScaleDown := func(t *testing.T, indexer *docappender.Appender, rdr *sdkmetric.ManualReader, n int64) {
 		timeout := time.NewTimer(5 * time.Second)
-		for a.IndexersActive() > n {
-			require.Greater(t, a.IndexersActive(), int64(0))
+		for indexer.IndexersActive() > n {
+			require.Greater(t, indexer.IndexersActive(), int64(0))
 			select {
 			case <-time.After(10 * time.Millisecond):
 			case <-timeout.C:
-				require.LessOrEqual(t, a.IndexersActive(), n)
+				require.LessOrEqual(t, indexer.IndexersActive(), n)
 			}
 		}
 
@@ -1851,15 +1844,9 @@ func TestAppenderScaling(t *testing.T) {
 		}
 
 		assert.Greater(t, indexersDestroyed, int64(0), "No downscales took place")
-		assert.Equal(t, a.IndexersActive(), int64(n))
+		assert.Equal(t, indexer.IndexersActive(), int64(n))
 	}
-
-	waitForBulkRequests := func(
-		t *testing.T,
-		indexer *docappender.Appender,
-		rdr *sdkmetric.ManualReader,
-		n int64,
-	) {
+	waitForBulkRequests := func(t *testing.T, indexer *docappender.Appender, rdr *sdkmetric.ManualReader, n int64) {
 		bulkRequests := func() int64 {
 			var rm metricdata.ResourceMetrics
 			assert.NoError(t, rdr.Collect(context.Background(), &rm))
