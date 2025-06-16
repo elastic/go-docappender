@@ -57,7 +57,13 @@ func TestAppenderWithFailureStore(t *testing.T) {
 	var bytesUncompressed int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Len(t, r.URL.Query(), 1)
-		require.Equal(t, strings.Join([]string{"items.*._index", "items.*.status", "items.*.failure_store", "items.*.error.type", "items.*.error.reason"}, ","), r.URL.Query().Get("filter_path"))
+		require.Equal(t, strings.Join([]string{
+			"items.*._index",
+			"items.*.status",
+			"items.*.failure_store",
+			"items.*.error.type",
+			"items.*.error.reason",
+		}, ","), r.URL.Query().Get("filter_path"))
 		bytesTotal += r.ContentLength
 		_, result, stat := docappendertest.DecodeBulkRequestWithStats(r)
 		bytesUncompressed += stat.UncompressedBytes
