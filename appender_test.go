@@ -52,7 +52,7 @@ import (
 	"github.com/elastic/go-docappender/v2/docappendertest"
 )
 
-func TestAppender(t *testing.T) {
+func TestAppenderWithFailureStore(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +238,7 @@ func TestAppender(t *testing.T) {
 	assert.Equal(t, 7, processedAsserted)
 }
 
-func TestAppenderRetry(t *testing.T) {
+func TestAppenderRetryTooMany(t *testing.T) {
 	var bytesTotal int64
 	var bytesUncompressed int64
 	var first atomic.Bool
