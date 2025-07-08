@@ -56,8 +56,8 @@ const (
 	ActionIndex  = "index"
 	ActionUpdate = "update"
 
-	HeaderEventCount         = "Event-Count"
-	HeaderUncompressedLength = "Content-Uncompressed-Length"
+	HeaderEventCount         = "X-Elastic-Event-Count"
+	HeaderUncompressedLength = "X-Elastic-Content-Uncompressed-Length"
 )
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
