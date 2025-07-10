@@ -55,6 +55,9 @@ const (
 	ActionDelete = "delete"
 	ActionIndex  = "index"
 	ActionUpdate = "update"
+
+	HeaderEventCount         = "X-Elastic-Event-Count"
+	HeaderUncompressedLength = "X-Elastic-Uncompressed-Request-Length"
 )
 
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
@@ -395,6 +398,8 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	}
 
 	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add(HeaderEventCount, strconv.Itoa(b.itemsAdded))
+	req.Header.Add(HeaderUncompressedLength, strconv.Itoa(b.UncompressedLen()))
 	v := req.URL.Query()
 	if b.config.Pipeline != "" {
 		v.Set("pipeline", b.config.Pipeline)

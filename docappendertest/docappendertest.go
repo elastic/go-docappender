@@ -190,7 +190,10 @@ func decodeBulkRequest(r *http.Request) (
 		itemMeta.Action = actionType
 		meta = append(meta, itemMeta)
 	}
-	return docs, meta, result, RequestStats{int64(cr.bytesRead)}
+	return docs, meta, result, RequestStats{
+		UncompressedBytes: int64(cr.bytesRead),
+		EventCount:        int64(len(result.Items)),
+	}
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
@@ -267,4 +270,5 @@ func (c *countReader) Read(p []byte) (int, error) {
 
 type RequestStats struct {
 	UncompressedBytes int64
+	EventCount        int64
 }
