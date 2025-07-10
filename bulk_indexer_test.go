@@ -37,6 +37,37 @@ import (
 	"github.com/elastic/go-docappender/v2/docappendertest"
 )
 
+type reqStat struct {
+	headerEventCount         int64
+	actualEventCount         int64
+	headerUncompressedLength int64
+	actualUncompressedLength int64
+}
+
+// collectTelemetryHeaders extracts telemetry headers from the HTTP request and
+// fills the given `reqStat` struct with the header values.
+// The actual bulk metrics remain untouched and need to be filled elsewhere.
+func collectTelemetryHeaders(t *testing.T, r *http.Request, stats docappendertest.RequestStats) (out reqStat) {
+	var err error
+
+	// headers
+	ec := r.Header.Get(docappender.HeaderEventCount)
+	require.NotEmpty(t, ec, "Request must have the %s header", docappender.HeaderEventCount)
+	out.headerEventCount, err = strconv.ParseInt(ec, 10, 64)
+	require.NoError(t, err)
+
+	ul := r.Header.Get(docappender.HeaderUncompressedLength)
+	require.NotEmpty(t, ul, "Request must have the %s header", docappender.HeaderUncompressedLength)
+	out.headerUncompressedLength, err = strconv.ParseInt(ul, 10, 64)
+	require.NoError(t, err)
+
+	// actual values
+	out.actualEventCount = stats.EventCount
+	out.actualUncompressedLength = stats.UncompressedBytes
+
+	return out
+}
+
 func TestBulkIndexer(t *testing.T) {
 	for _, tc := range []struct {
 		Name             string
@@ -48,9 +79,14 @@ func TestBulkIndexer(t *testing.T) {
 		{Name: "speed_compression", CompressionLevel: gzip.BestSpeed},
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
-			var esFailing atomic.Bool
+			var (
+				reqStats  []reqStat
+				esFailing atomic.Bool
+			)
 			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				_, result := docappendertest.DecodeBulkRequest(r)
+				_, result, stats := docappendertest.DecodeBulkRequestWithStats(r)
+				rs := collectTelemetryHeaders(t, r, stats)
+				reqStats = append(reqStats, rs)
 				if esFailing.Load() {
 					for _, itemsMap := range result.Items {
 						for k, item := range itemsMap {
@@ -130,6 +166,11 @@ func TestBulkIndexer(t *testing.T) {
 			// no documents to retry so buffer should be empty
 			require.Equal(t, 0, indexer.Len())
 			require.Equal(t, 0, indexer.UncompressedLen())
+
+			for _, stats := range reqStats {
+				assert.Equal(t, stats.headerUncompressedLength, stats.actualUncompressedLength, "%s header does not match the actual value", docappender.HeaderUncompressedLength)
+				assert.Equal(t, stats.headerEventCount, stats.actualEventCount, "%s header does not match the actual value", docappender.HeaderEventCount)
+			}
 		})
 	}
 }
