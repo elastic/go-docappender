@@ -29,9 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"go.elastic.co/apm/module/apmzap/v2"
-	"go.elastic.co/apm/v2"
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -62,30 +60,20 @@ var (
 // Up to `config.MaxRequests` bulk requests may be flushing/active concurrently, to allow the
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Appender struct {
-	// legacy metrics for Stats()
-	bulkRequests           int64
-	docsAdded              int64
-	docsActive             int64
-	docsFailed             int64
-	docsFailedClient       int64
-	docsFailedServer       int64
-	docsIndexed            int64
-	tooManyRequests        int64
-	bytesTotal             int64
-	bytesUncompressedTotal int64
-	availableBulkRequests  int64
-	activeCreated          int64
-	activeDestroyed        int64
-	blockedAdd             int64
+	// Used internally to calculate indexFailureRate for scaling reasons only.
+	docsAdded       atomic.Int64
+	tooManyRequests atomic.Int64
 
 	scalingInfo atomic.Value
 
 	config                Config
-	available             chan *BulkIndexer
+	client                elastictransport.Interface
+	pool                  *BulkIndexerPool
+	id                    string
 	bulkItems             chan BulkIndexerItem
 	errgroup              errgroup.Group
 	errgroupContext       context.Context
-	cancelErrgroupContext context.CancelFunc
+	cancelErrgroupContext context.CancelCauseFunc
 	metrics               metrics
 	mu                    sync.Mutex
 	closed                chan struct{}
@@ -97,7 +85,8 @@ type Appender struct {
 
 // New returns a new Appender that indexes documents into Elasticsearch.
 // It is only tested with v8 go-elasticsearch client. Use other clients at your own risk.
-func New(client esapi.Transport, cfg Config) (*Appender, error) {
+func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
+	cfg = DefaultConfig(client, cfg)
 	if client == nil {
 		return nil, errors.New("client is nil")
 	}
@@ -107,38 +96,6 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 			"expected CompressionLevel in range [-1,9], got %d",
 			cfg.CompressionLevel,
 		)
-	}
-	if cfg.MaxRequests <= 0 {
-		cfg.MaxRequests = 10
-	}
-	if cfg.FlushBytes <= 0 {
-		cfg.FlushBytes = 1 * 1024 * 1024
-	}
-	if cfg.FlushInterval <= 0 {
-		cfg.FlushInterval = 30 * time.Second
-	}
-	if cfg.DocumentBufferSize <= 0 {
-		cfg.DocumentBufferSize = 1024
-	}
-	if !cfg.Scaling.Disabled {
-		if cfg.Scaling.ScaleDown.Threshold == 0 {
-			cfg.Scaling.ScaleDown.Threshold = 30
-		}
-		if cfg.Scaling.ScaleDown.CoolDown <= 0 {
-			cfg.Scaling.ScaleDown.CoolDown = 30 * time.Second
-		}
-		if cfg.Scaling.ScaleUp.Threshold == 0 {
-			cfg.Scaling.ScaleUp.Threshold = 60
-		}
-		if cfg.Scaling.ScaleUp.CoolDown <= 0 {
-			cfg.Scaling.ScaleUp.CoolDown = time.Minute
-		}
-		if cfg.Scaling.IdleInterval <= 0 {
-			cfg.Scaling.IdleInterval = 30 * time.Second
-		}
-		if cfg.Scaling.ActiveRatio <= 0 {
-			cfg.Scaling.ActiveRatio = 0.25
-		}
 	}
 
 	minFlushBytes := 16 * 1024 // 16kb
@@ -153,37 +110,27 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 	if err != nil {
 		return nil, err
 	}
-	available := make(chan *BulkIndexer, cfg.MaxRequests)
-	for i := 0; i < cfg.MaxRequests; i++ {
-		bi, err := NewBulkIndexer(BulkIndexerConfig{
-			Client:                client,
-			MaxDocumentRetries:    cfg.MaxDocumentRetries,
-			RetryOnDocumentStatus: cfg.RetryOnDocumentStatus,
-			CompressionLevel:      cfg.CompressionLevel,
-			Pipeline:              cfg.Pipeline,
-			RequireDataStream:     cfg.RequireDataStream,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("error creating bulk indexer: %w", err)
-		}
-		available <- bi
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = zap.NewNop()
+	if err := BulkIndexerConfigFrom(client, cfg).Validate(); err != nil {
+		return nil, fmt.Errorf("error creating bulk indexer: %w", err)
 	}
 	indexer := &Appender{
+		pool:      cfg.BulkIndexerPool,
 		config:    cfg,
-		available: available,
+		client:    client,
 		closed:    make(chan struct{}),
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
-	indexer.addUpDownCount(int64(len(available)), &indexer.availableBulkRequests, ms.availableBulkRequests)
-
+	// Use the Appender's pointer as the unique ID for the BulkIndexerPool.
+	// Register the Appender ID in the pool.
+	indexer.id = fmt.Sprintf("%p", indexer)
+	indexer.pool.Register(indexer.id)
+	attrs := metric.WithAttributeSet(indexer.config.MetricAttributes)
+	indexer.metrics.availableBulkRequests.Add(context.Background(), int64(cfg.MaxRequests), attrs)
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
 	// because one flush failure should not cause the context to be cancelled.
-	indexer.errgroupContext, indexer.cancelErrgroupContext = context.WithCancel(
+	indexer.errgroupContext, indexer.cancelErrgroupContext = context.WithCancelCause(
 		context.Background(),
 	)
 	indexer.scalingInfo.Store(scalingInfo{activeIndexers: 1})
@@ -192,7 +139,7 @@ func New(client esapi.Transport, cfg Config) (*Appender, error) {
 		return nil
 	})
 
-	if cfg.Tracer == nil && cfg.TracerProvider != nil {
+	if cfg.TracerProvider != nil {
 		indexer.tracer = cfg.TracerProvider.Tracer("github.com/elastic/go-docappender.appender")
 	}
 
@@ -214,20 +161,20 @@ func (a *Appender) Close(ctx context.Context) error {
 	}
 	close(a.closed)
 
-	// Cancel ongoing flushes when ctx is cancelled.
+	// Cancel ongoing flushes/pool.Get() when ctx is cancelled.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		defer a.cancelErrgroupContext()
+		defer a.cancelErrgroupContext(errors.New("cancelled by appender.close"))
 		<-ctx.Done()
 	}()
 
 	if err := a.errgroup.Wait(); err != nil {
 		return err
 	}
-	close(a.available)
+	indexers := a.pool.Deregister(a.id)
 	var errs []error
-	for bi := range a.available {
+	for bi := range indexers {
 		if err := a.flush(context.Background(), bi); err != nil {
 			errs = append(errs, fmt.Errorf("indexer failed: %w", err))
 		}
@@ -236,26 +183,6 @@ func (a *Appender) Close(ctx context.Context) error {
 		return fmt.Errorf("failed to flush events on close: %w", errors.Join(errs...))
 	}
 	return nil
-}
-
-// Stats returns the bulk indexing stats.
-func (a *Appender) Stats() Stats {
-	return Stats{
-		Added:                  atomic.LoadInt64(&a.docsAdded),
-		Active:                 atomic.LoadInt64(&a.docsActive),
-		BulkRequests:           atomic.LoadInt64(&a.bulkRequests),
-		Failed:                 atomic.LoadInt64(&a.docsFailed),
-		FailedClient:           atomic.LoadInt64(&a.docsFailedClient),
-		FailedServer:           atomic.LoadInt64(&a.docsFailedServer),
-		Indexed:                atomic.LoadInt64(&a.docsIndexed),
-		TooManyRequests:        atomic.LoadInt64(&a.tooManyRequests),
-		BytesTotal:             atomic.LoadInt64(&a.bytesTotal),
-		BytesUncompressedTotal: atomic.LoadInt64(&a.bytesUncompressedTotal),
-		AvailableBulkRequests:  atomic.LoadInt64(&a.availableBulkRequests),
-		IndexersActive:         a.scalingInformation().activeIndexers,
-		IndexersCreated:        atomic.LoadInt64(&a.activeCreated),
-		IndexersDestroyed:      atomic.LoadInt64(&a.activeDestroyed),
-	}
 }
 
 // Add enqueues document for appending to index.
@@ -281,7 +208,8 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Body:  document,
 	}
 	if len(a.bulkItems) == cap(a.bulkItems) {
-		a.addCount(1, &a.blockedAdd, a.metrics.blockedAdd)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.blockedAdd.Add(context.Background(), 1, attrs)
 	}
 
 	select {
@@ -291,29 +219,17 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		return ErrClosed
 	case a.bulkItems <- item:
 	}
-	a.addCount(1, &a.docsAdded, a.metrics.docsAdded)
-	a.addUpDownCount(1, &a.docsActive, a.metrics.docsActive)
+
+	a.docsAdded.Add(1)
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	a.metrics.docsAdded.Add(context.Background(), 1, attrs)
+	a.metrics.docsActive.Add(context.Background(), 1, attrs)
+
 	return nil
 }
 
-func (a *Appender) addCount(delta int64, lm *int64, m metric.Int64Counter, opts ...metric.AddOption) {
-	// legacy metric
-	if lm != nil {
-		atomic.AddInt64(lm, delta)
-	}
-
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	m.Add(context.Background(), delta, append(opts, attrs)...)
-}
-
-func (a *Appender) addUpDownCount(delta int64, lm *int64, m metric.Int64UpDownCounter, opts ...metric.AddOption) {
-	// legacy metric
-	if lm != nil {
-		atomic.AddInt64(lm, delta)
-	}
-
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	m.Add(context.Background(), delta, append(opts, attrs)...)
+func (a *Appender) IndexersActive() int64 {
+	return a.scalingInformation().activeIndexers
 }
 
 func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
@@ -321,20 +237,14 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if n == 0 {
 		return nil
 	}
-	defer a.addCount(1, &a.bulkRequests, a.metrics.bulkRequests)
+	defer func() {
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bulkRequests.Add(context.Background(), 1, attrs)
+	}()
 
 	logger := a.config.Logger
 	var span trace.Span
-	if a.tracingEnabled() {
-		tx := a.config.Tracer.StartTransaction("docappender.flush", "output")
-		tx.Context.SetLabel("documents", n)
-		defer tx.End()
-		ctx = apm.ContextWithTransaction(ctx, tx)
-
-		// Add trace IDs to logger, to associate any per-item errors
-		// below with the trace.
-		logger = logger.With(apmzap.TraceContext(ctx)...)
-	} else if a.otelTracingEnabled() {
+	if a.otelTracingEnabled() {
 		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
 			attribute.Int("documents", n),
 		))
@@ -363,59 +273,67 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), &a.bytesTotal, a.metrics.bytesTotal)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bytesTotal.Add(context.Background(), int64(flushed), attrs)
 	}
 	// Record the BulkIndexer uncompressed bytes written to the buffer
 	// as the bytesUncompressedTotal metric after the request has been flushed.
 	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
-		a.addCount(int64(flushed), &a.bytesUncompressedTotal, a.metrics.bytesUncompressedTotal)
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.bytesUncompressedTotal.Add(context.Background(), int64(flushed), attrs)
 	}
 	if err != nil {
-		a.addUpDownCount(-int64(n), &a.docsActive, a.metrics.docsActive)
-		atomic.AddInt64(&a.docsFailed, int64(n))
+		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+		a.metrics.docsActive.Add(context.Background(), -int64(n), attrs)
 		logger.Error("bulk indexing request failed", zap.Error(err))
-		if a.tracingEnabled() {
-			apm.CaptureError(ctx, err).Send()
-		} else if a.otelTracingEnabled() && span.IsRecording() {
+		if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "bulk indexing request failed")
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			a.addCount(int64(n), nil,
-				a.metrics.docsIndexed,
+			a.metrics.docsIndexed.Add(
+				context.Background(),
+				int64(n),
 				metric.WithAttributes(attribute.String("status", "Timeout")),
+				metric.WithAttributeSet(a.config.MetricAttributes),
 			)
 		}
 
 		// Bulk indexing may fail with different status codes.
-		var errFailed errorFlushFailed
+		var errFailed ErrorFlushFailed
 		if errors.As(err, &errFailed) {
-			var legacy *int64
 			var status string
 			switch {
 			case errFailed.tooMany:
-				legacy, status = &a.tooManyRequests, "TooMany"
+				a.tooManyRequests.Add(a.tooManyRequests.Load())
+				status = "TooMany"
 			case errFailed.clientError:
-				legacy, status = &a.docsFailedClient, "FailedClient"
+				status = "FailedClient"
 			case errFailed.serverError:
-				legacy, status = &a.docsFailedServer, "FailedServer"
+				status = "FailedServer"
 			}
 			if status != "" {
-				a.addCount(int64(n), legacy, a.metrics.docsIndexed,
-					metric.WithAttributes(attribute.String("status", status), semconv.HTTPResponseStatusCode(errFailed.statusCode)),
+				a.metrics.docsIndexed.Add(
+					context.Background(),
+					int64(n),
+					metric.WithAttributes(
+						attribute.String("status", status),
+						semconv.HTTPResponseStatusCode(errFailed.statusCode),
+					),
+					metric.WithAttributeSet(a.config.MetricAttributes),
 				)
 			}
 		}
 		return err
 	}
-	var (
-		docsFailed, docsIndexed,
+	var docsFailed, docsIndexed,
 		// breakdown of failed docs:
 		tooManyRequests, // failed after document retries (if it applies) and final status is 429
 		clientFailed, // failed after document retries (if it applies) and final status is 400s excluding 429
 		serverFailed int64 // failed after document retries (if it applies) and final status is 500s
-	)
+
+	failureStoreDocs := resp.FailureStoreDocs
 	docsIndexed = resp.Indexed
 	var failedCount map[BulkIndexerResponseItem]int
 	if len(resp.FailedDocs) > 0 {
@@ -423,7 +341,8 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	docsFailed = int64(len(resp.FailedDocs))
 	totalFlushed := docsFailed + docsIndexed
-	a.addUpDownCount(-totalFlushed, &a.docsActive, a.metrics.docsActive)
+	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+	a.metrics.docsActive.Add(context.Background(), -totalFlushed, attrs)
 	for _, info := range resp.FailedDocs {
 		if info.Status >= 400 && info.Status < 500 {
 			if info.Status == http.StatusTooManyRequests {
@@ -437,9 +356,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		}
 		info.Position = 0 // reset position so that the response item can be used as key in the map
 		failedCount[info]++
-		if a.tracingEnabled() {
-			apm.CaptureError(ctx, errors.New(info.Error.Reason)).Send()
-		} else if a.otelTracingEnabled() && span.IsRecording() {
+		if a.otelTracingEnabled() && span.IsRecording() {
 			e := errors.New(info.Error.Reason)
 			span.RecordError(e)
 			span.SetStatus(codes.Error, e.Error())
@@ -450,37 +367,79 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			key.Index, key.Error.Type, key.Error.Reason,
 		), zap.Int("documents", count))
 	}
-	if docsFailed > 0 {
-		atomic.AddInt64(&a.docsFailed, docsFailed)
-	}
 	if resp.RetriedDocs > 0 {
 		// docs are scheduled to be retried but not yet failed due to retry limit
-		a.addCount(resp.RetriedDocs, nil, a.metrics.docsRetried,
+		a.metrics.docsRetried.Add(
+			context.Background(),
+			resp.RetriedDocs,
+			metric.WithAttributeSet(a.config.MetricAttributes),
 			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
 		)
 	}
 	if docsIndexed > 0 {
-		a.addCount(docsIndexed, &a.docsIndexed,
-			a.metrics.docsIndexed,
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			docsIndexed,
+			metric.WithAttributeSet(a.config.MetricAttributes),
 			metric.WithAttributes(attribute.String("status", "Success")),
 		)
 	}
 	if tooManyRequests > 0 {
-		a.addCount(tooManyRequests, &a.tooManyRequests,
-			a.metrics.docsIndexed,
+		a.tooManyRequests.Add(tooManyRequests)
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			tooManyRequests,
 			metric.WithAttributes(attribute.String("status", "TooMany")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if clientFailed > 0 {
-		a.addCount(clientFailed, &a.docsFailedClient,
-			a.metrics.docsIndexed,
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			clientFailed,
 			metric.WithAttributes(attribute.String("status", "FailedClient")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	if serverFailed > 0 {
-		a.addCount(serverFailed, &a.docsFailedServer,
-			a.metrics.docsIndexed,
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			serverFailed,
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
+			metric.WithAttributeSet(a.config.MetricAttributes),
+		)
+	}
+	if failureStoreDocs.Used > 0 {
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			failureStoreDocs.Used,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusUsed)),
+			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
+		)
+	}
+	if failureStoreDocs.Failed > 0 {
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			failureStoreDocs.Failed,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusFailed)),
+			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
+		)
+	}
+	if failureStoreDocs.NotEnabled > 0 {
+		a.metrics.docsIndexed.Add(
+			context.Background(),
+			failureStoreDocs.NotEnabled,
+			metric.WithAttributes(
+				attribute.String("status", "FailureStore"),
+				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
+			),
+			metric.WithAttributeSet(a.config.MetricAttributes),
 		)
 	}
 	logger.Debug(
@@ -488,6 +447,9 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		zap.Int64("docs_indexed", docsIndexed),
 		zap.Int64("docs_failed", docsFailed),
 		zap.Int64("docs_rate_limited", tooManyRequests),
+		zap.Int64("docs_failure_store_used", failureStoreDocs.Used),
+		zap.Int64("docs_failure_store_failed", failureStoreDocs.Failed),
+		zap.Int64("docs_failure_store_not_enabled", failureStoreDocs.NotEnabled),
 	)
 	if a.otelTracingEnabled() && span.IsRecording() {
 		span.SetStatus(codes.Ok, "")
@@ -510,18 +472,33 @@ func (a *Appender) runActiveIndexer() {
 		<-flushTimer.C
 	}
 	var firstDocTS time.Time
-	handleBulkItem := func(item BulkIndexerItem) {
+	handleBulkItem := func(item BulkIndexerItem) bool {
 		if active == nil {
 			// NOTE(marclop) Record the TS when the first document is cached.
 			// It doesn't account for the time spent in the buffered channel.
 			firstDocTS = time.Now()
-			active = <-a.available
-			a.addUpDownCount(-1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+			// Return early when the Close() context expires before get returns
+			// an indexer. This could happen when all available bulk_requests
+			// are in flight & no new BulkIndexers can be pulled from the pool.
+			var err error
+			active, err = a.pool.Get(a.errgroupContext, a.id)
+			if err != nil {
+				a.config.Logger.Warn("failed to get bulk indexer from pool", zap.Error(err))
+				return false
+			}
+			// The BulkIndexer may have been used by another appender, we need
+			// to reset it to ensure we're using the right client.
+			active.SetClient(a.client)
+
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.availableBulkRequests.Add(context.Background(), -1, attrs)
+			a.metrics.inflightBulkrequests.Add(context.Background(), 1, attrs)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.Add(item); err != nil {
 			a.config.Logger.Error("failed to Add item to bulk indexer", zap.Error(err))
 		}
+		return true
 	}
 	for !closed {
 		select {
@@ -555,16 +532,17 @@ func (a *Appender) runActiveIndexer() {
 				timedFlush++
 				fullFlush = 0
 			case item := <-a.bulkItems:
-				handleBulkItem(item)
-				if active.Len() < a.config.FlushBytes {
-					continue
-				}
-				fullFlush++
-				timedFlush = 0
-				// The active indexer is at or exceeds the configured FlushBytes
-				// threshold, so flush it.
-				if !flushTimer.Stop() {
-					<-flushTimer.C
+				if handleBulkItem(item) {
+					if active.Len() < a.config.FlushBytes {
+						continue
+					}
+					fullFlush++
+					timedFlush = 0
+					// The active indexer is at or exceeds the configured FlushBytes
+					// threshold, so flush it.
+					if !flushTimer.Stop() {
+						<-flushTimer.C
+					}
 				}
 			}
 		}
@@ -578,8 +556,10 @@ func (a *Appender) runActiveIndexer() {
 					err = a.flush(a.errgroupContext, indexer)
 				})
 				indexer.Reset()
-				a.available <- indexer
-				a.addUpDownCount(1, &a.availableBulkRequests, a.metrics.availableBulkRequests)
+				a.pool.Put(a.id, indexer)
+				attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+				a.metrics.availableBulkRequests.Add(context.Background(), 1, attrs)
+				a.metrics.inflightBulkrequests.Add(context.Background(), -1, attrs)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
 					attrs,
 				)
@@ -595,11 +575,13 @@ func (a *Appender) runActiveIndexer() {
 		now := time.Now()
 		info := a.scalingInformation()
 		if a.maybeScaleDown(now, info, &timedFlush) {
-			a.addCount(1, &a.activeDestroyed, a.metrics.activeDestroyed)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.activeDestroyed.Add(context.Background(), 1, attrs)
 			return
 		}
 		if a.maybeScaleUp(now, info, &fullFlush) {
-			a.addCount(1, &a.activeCreated, a.metrics.activeCreated)
+			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
+			a.metrics.activeCreated.Add(context.Background(), 1, attrs)
 			a.errgroup.Go(func() error {
 				a.runActiveIndexer()
 				return nil
@@ -720,13 +702,7 @@ func (a *Appender) scalingInformation() scalingInfo {
 
 // indexFailureRate returns the decimal percentage of 429 / total docs.
 func (a *Appender) indexFailureRate() float64 {
-	return float64(atomic.LoadInt64(&a.tooManyRequests)) /
-		float64(atomic.LoadInt64(&a.docsAdded))
-}
-
-// tracingEnabled checks whether we should be doing tracing
-func (a *Appender) tracingEnabled() bool {
-	return a.config.Tracer != nil && a.config.Tracer.Recording()
+	return float64(a.tooManyRequests.Load()) / float64(a.docsAdded.Load())
 }
 
 // otelTracingEnabled checks whether we should be doing tracing
@@ -767,65 +743,6 @@ func (s scalingInfo) ScaleUp(t time.Time) scalingInfo {
 
 func (s scalingInfo) withinCoolDown(cooldown time.Duration, now time.Time) bool {
 	return s.lastAction.Add(cooldown).After(now)
-}
-
-// Stats holds bulk indexing statistics.
-type Stats struct {
-	// Active holds the active number of items waiting in the indexer's queue.
-	Active int64
-
-	// Added holds the number of items added to the indexer.
-	Added int64
-
-	// BulkRequests holds the number of bulk requests completed.
-	BulkRequests int64
-
-	// Failed holds the number of indexing operations that failed. It includes
-	// all failures.
-	Failed int64
-
-	// FailedClient holds the number of indexing operations that failed with a
-	// status_code >= 400 < 500, but not 429.
-	FailedClient int64
-
-	// FailedServer holds the number of indexing operations that failed with a
-	// status_code >= 500.
-	FailedServer int64
-
-	// Indexed holds the number of indexing operations that have completed
-	// successfully.
-	Indexed int64
-
-	// TooManyRequests holds the number of indexing operations that failed due
-	// to Elasticsearch responding with 429 Too many Requests.
-	TooManyRequests int64
-
-	// BytesTotal represents the total number of bytes written to the request
-	// body that is sent in the outgoing _bulk request to Elasticsearch.
-	// The number of bytes written will be smaller when compression is enabled.
-	// This implementation differs from the previous number reported by libbeat
-	// which counts bytes at the transport level.
-	BytesTotal int64
-
-	// BytesUncompressedTotal represents the total number of bytes written to
-	// the request body before compression.
-	// The number of bytes written will be equal to BytesTotal if compression is disabled.
-	BytesUncompressedTotal int64
-
-	// AvailableBulkRequests represents the number of bulk indexers
-	// available for making bulk index requests.
-	AvailableBulkRequests int64
-
-	// IndexersActive represents the number of active bulk indexers that are
-	// concurrently processing batches.
-	IndexersActive int64
-
-	// IndexersCreated represents the number of times new active indexers were
-	// created.
-	IndexersCreated int64
-
-	// IndexersDestroyed represents the number of times an active indexer was destroyed.
-	IndexersDestroyed int64
 }
 
 func timeFunc(f func()) time.Duration {

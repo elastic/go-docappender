@@ -25,27 +25,68 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/module/apmelasticsearch/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-
-	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
+
+type BulkRequestItemMeta struct {
+	Action            string            `json:"-"`
+	Index             string            `json:"_index"`
+	DocumentID        string            `json:"_id"`
+	Pipeline          string            `json:"pipeline"`
+	DynamicTemplates  map[string]string `json:"dynamic_templates"`
+	RequireDataStream bool              `json:"require_data_stream"`
+}
 
 // TimestampFormat holds the time format for formatting timestamps according to
 // Elasticsearch's strict_date_optional_time date format, which includes a fractional
 // seconds component.
 const TimestampFormat = "2006-01-02T15:04:05.000Z07:00"
 
+type BulkIndexerResponse struct {
+	Took      int                                  `json:"took"`
+	HasErrors bool                                 `json:"errors"`
+	Items     []map[string]BulkIndexerResponseItem `json:"items,omitempty"`
+}
+
+// BulkIndexerResponseItem represents the Elasticsearch response item.
+type BulkIndexerResponseItem struct {
+	Index        string `json:"_index"`
+	DocumentID   string `json:"_id"`
+	Version      int64  `json:"_version"`
+	Result       string `json:"result"`
+	Status       int    `json:"status"`
+	SeqNo        int64  `json:"_seq_no"`
+	PrimTerm     int64  `json:"_primary_term"`
+	FailureStore string `json:"failure_store,omitempty"`
+
+	Shards struct {
+		Total      int `json:"total"`
+		Successful int `json:"successful"`
+		Failed     int `json:"failed"`
+	} `json:"_shards"`
+
+	Error struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+		Cause  struct {
+			Type   string `json:"type"`
+			Reason string `json:"reason"`
+		} `json:"caused_by"`
+	} `json:"error,omitempty"`
+}
+
 // DecodeBulkRequest decodes a /_bulk request's body, returning the decoded documents and a response body.
-func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
+func DecodeBulkRequest(r *http.Request) ([][]byte, BulkIndexerResponse) {
 	indexed, result, _ := DecodeBulkRequestWithStats(r)
 	return indexed, result
 }
@@ -54,17 +95,29 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, esutil.BulkIndexerResponse) {
 // and a response body and stats about request.
 func DecodeBulkRequestWithStats(r *http.Request) (
 	docs [][]byte,
-	res esutil.BulkIndexerResponse,
+	res BulkIndexerResponse,
 	stats RequestStats) {
 	indexed, result, stats, _ := DecodeBulkRequestWithStatsAndDynamicTemplates(r)
 	return indexed, result, stats
+}
+
+// DecodeBulkRequestWithStatsAndMeta decodes a /_bulk request's body,
+// returning the decoded bulk request action/meta and documents,
+// and a response body and stats about the request.
+func DecodeBulkRequestWithStatsAndMeta(r *http.Request) (
+	docs [][]byte,
+	meta []BulkRequestItemMeta,
+	res BulkIndexerResponse,
+	stats RequestStats,
+) {
+	return decodeBulkRequest(r)
 }
 
 // DecodeBulkRequestWithStatsAndDynamicTemplates decodes a /_bulk request's body,
 // returning the decoded documents and a response body and stats about request, and per-request dynamic templates.
 func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 	docs [][]byte,
-	res esutil.BulkIndexerResponse,
+	res BulkIndexerResponse,
 	stats RequestStats,
 	dynamicTemplates []map[string]string) {
 
@@ -76,10 +129,25 @@ func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 // returning the decoded documents and a response body and stats about request, per-request dynamic templates and pipelines specified in the event.
 func DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r *http.Request) (
 	docs [][]byte,
-	res esutil.BulkIndexerResponse,
+	res BulkIndexerResponse,
 	stats RequestStats,
 	dynamicTemplates []map[string]string,
-	pipelines []string) {
+	pipelines []string,
+) {
+	docs, meta, res, stats := decodeBulkRequest(r)
+	for _, meta := range meta {
+		dynamicTemplates = append(dynamicTemplates, meta.DynamicTemplates)
+		pipelines = append(pipelines, meta.Pipeline)
+	}
+	return docs, res, stats, dynamicTemplates, pipelines
+}
+
+func decodeBulkRequest(r *http.Request) (
+	docs [][]byte,
+	meta []BulkRequestItemMeta,
+	result BulkIndexerResponse,
+	stats RequestStats,
+) {
 	body := r.Body
 	switch r.Header.Get("Content-Encoding") {
 	case "gzip":
@@ -95,15 +163,10 @@ func DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r *http.Request) 
 	}
 	body = cr
 	defer cr.Close()
+
 	scanner := bufio.NewScanner(body)
-	var indexed [][]byte
-	var result esutil.BulkIndexerResponse
 	for scanner.Scan() {
-		action := make(map[string]struct {
-			Index            string            `json:"_index"`
-			DynamicTemplates map[string]string `json:"dynamic_templates"`
-			Pipeline         string            `json:"pipeline"`
-		})
+		action := make(map[string]BulkRequestItemMeta)
 		if err := json.NewDecoder(strings.NewReader(scanner.Text())).Decode(&action); err != nil {
 			panic(err)
 		}
@@ -118,34 +181,42 @@ func DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r *http.Request) 
 		if !json.Valid(doc) {
 			panic(fmt.Errorf("invalid JSON: %s", doc))
 		}
-		indexed = append(indexed, doc)
+		docs = append(docs, doc)
 
-		item := esutil.BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
-		result.Items = append(result.Items, map[string]esutil.BulkIndexerResponseItem{actionType: item})
-		dynamicTemplates = append(dynamicTemplates, action[actionType].DynamicTemplates)
-		pipelines = append(pipelines, action[actionType].Pipeline)
+		item := BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
+		result.Items = append(result.Items, map[string]BulkIndexerResponseItem{actionType: item})
+
+		itemMeta := action[actionType]
+		itemMeta.Action = actionType
+		meta = append(meta, itemMeta)
 	}
-	return indexed, result, RequestStats{int64(cr.bytesRead)}, dynamicTemplates, pipelines
+	return docs, meta, result, RequestStats{
+		UncompressedBytes: int64(cr.bytesRead),
+		EventCount:        int64(len(result.Items)),
+	}
 }
 
 // NewMockElasticsearchClient returns an elasticsearch.Client which sends /_bulk requests to bulkHandler.
-func NewMockElasticsearchClient(t testing.TB, bulkHandler http.HandlerFunc) *elasticsearch.Client {
+func NewMockElasticsearchClient(t testing.TB, bulkHandler http.HandlerFunc) *elastictransport.Client {
 	config := NewMockElasticsearchClientConfig(t, bulkHandler)
-	client, err := elasticsearch.NewClient(config)
+	client, err := elastictransport.New(config)
 	require.NoError(t, err)
 	return client
 }
 
 // NewMockElasticsearchClientConfig starts an httptest.Server, and returns an elasticsearch.Config which
 // sends /_bulk requests to bulkHandler. The httptest.Server will be closed via t.Cleanup.
-func NewMockElasticsearchClientConfig(t testing.TB, bulkHandler http.HandlerFunc) elasticsearch.Config {
+func NewMockElasticsearchClientConfig(t testing.TB, bulkHandler http.HandlerFunc) elastictransport.Config {
 	mux := http.NewServeMux()
 	HandleBulk(mux, bulkHandler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	config := elasticsearch.Config{}
-	config.Addresses = []string{srv.URL}
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	config := elastictransport.Config{}
+	config.URLs = []*url.URL{u}
 	config.DisableRetry = true
 	config.Transport = apmelasticsearch.WrapRoundTripper(http.DefaultTransport)
 
@@ -199,4 +270,5 @@ func (c *countReader) Read(p []byte) (int, error) {
 
 type RequestStats struct {
 	UncompressedBytes int64
+	EventCount        int64
 }
