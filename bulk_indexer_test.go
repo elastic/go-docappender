@@ -306,7 +306,7 @@ func TestBulkIndexer_Split(t *testing.T) {
 		{
 			name:                   "uncompressed_bytes_split",
 			maxSize:                10_000,
-			sizerType:              docappender.UncompressedBytesSizer,
+			sizerType:              docappender.BytesSizer,
 			sourceIndexerMinSize:   1_000_005,
 			sourceCompressionLevel: gzip.NoCompression,
 		},
@@ -320,7 +320,7 @@ func TestBulkIndexer_Split(t *testing.T) {
 		{
 			name:                   "compressed_bytes_split",
 			maxSize:                10_000,
-			sizerType:              docappender.CompressedBytesSizer,
+			sizerType:              docappender.BytesSizer,
 			sourceIndexerMinSize:   1_000_005,
 			sourceCompressionLevel: gzip.BestCompression,
 		},

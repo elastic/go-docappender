@@ -260,14 +260,14 @@ func (b *BulkIndexer) resetBuf() {
 
 // Size returns the size of the buffer used by bulk indexer as per
 // the specified sizer type.
-// EXPERIMENTAL: This is an experimental API
+
+// EXPERIMENTAL: This is an experimental API and can be removed or
+// modified with breaking changes.
 func (b *BulkIndexer) Size(sizerType SizerType) int {
 	switch sizerType {
 	case ItemsCountSizer:
 		return b.Items()
-	case UncompressedBytesSizer:
-		return b.UncompressedLen()
-	case CompressedBytesSizer:
+	case BytesSizer:
 		return b.Len()
 	}
 	return b.Items()
@@ -409,6 +409,10 @@ func (b *BulkIndexer) Merge(other *BulkIndexer) error {
 	if b.config.CompressionLevel != other.config.CompressionLevel {
 		return errors.New("failed to merge bulk indexers, only same compression level merge is supported")
 	}
+	if other == nil {
+		return nil
+	}
+
 	switch b.config.CompressionLevel {
 	case gzip.NoCompression:
 		if _, err := other.buf.WriteTo(b.writer); err != nil {
@@ -881,8 +885,7 @@ type SizerType int
 
 const (
 	ItemsCountSizer SizerType = iota
-	UncompressedBytesSizer
-	CompressedBytesSizer
+	BytesSizer
 )
 
 func getSizeForByteBuffer(b bytes.Buffer, sizerType SizerType) int {
