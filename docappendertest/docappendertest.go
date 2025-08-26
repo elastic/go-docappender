@@ -96,7 +96,8 @@ func DecodeBulkRequest(r *http.Request) ([][]byte, BulkIndexerResponse) {
 func DecodeBulkRequestWithStats(r *http.Request) (
 	docs [][]byte,
 	res BulkIndexerResponse,
-	stats RequestStats) {
+	stats RequestStats,
+) {
 	indexed, result, stats, _ := DecodeBulkRequestWithStatsAndDynamicTemplates(r)
 	return indexed, result, stats
 }
@@ -119,8 +120,8 @@ func DecodeBulkRequestWithStatsAndDynamicTemplates(r *http.Request) (
 	docs [][]byte,
 	res BulkIndexerResponse,
 	stats RequestStats,
-	dynamicTemplates []map[string]string) {
-
+	dynamicTemplates []map[string]string,
+) {
 	indexed, result, stats, dynamicTemplates, _ := DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
 	return indexed, result, stats, dynamicTemplates
 }
