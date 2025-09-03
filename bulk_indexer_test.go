@@ -385,6 +385,242 @@ func TestBulkIndexer_FailureStore(t *testing.T) {
 	require.Equal(t, int64(1), stat.FailureStoreDocs.NotEnabled)
 }
 
+func TestBulkIndexerRetryDocument(t *testing.T) {
+	testCases := map[string]struct {
+		cfg docappender.BulkIndexerConfig
+	}{
+		"nocompression": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:    100,
+				RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
+			},
+		},
+		"gzip": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:    100,
+				RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
+				CompressionLevel:      gzip.BestCompression,
+			},
+		},
+		// As populateFailedDocsInput reuses some code as document retry, ensure that they work together.
+		"nocompression,populateFailedDocsInput": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:      100,
+				RetryOnDocumentStatus:   []int{http.StatusTooManyRequests},
+				PopulateFailedDocsInput: true,
+			},
+		},
+		"gzip,populateFailedDocsInput": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:      100,
+				RetryOnDocumentStatus:   []int{http.StatusTooManyRequests},
+				CompressionLevel:        gzip.BestCompression,
+				PopulateFailedDocsInput: true,
+			},
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var failedCount atomic.Int32
+			var done atomic.Bool
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				switch failedCount.Add(1) {
+				case 1:
+					require.Len(t, result.Items, 10)
+					for i, item := range result.Items {
+						switch i {
+						case 0, 4, 5, 6, 9:
+							itemResp := item["create"]
+							itemResp.Status = http.StatusTooManyRequests
+							itemResp.Error.Type = "too_many_requests"
+							itemResp.Error.Reason = "for testing"
+							item["create"] = itemResp
+							result.HasErrors = true
+						}
+					}
+					json.NewEncoder(w).Encode(result)
+					return
+				case 2:
+					require.Len(t, result.Items, 7)
+					assert.Equal(t, "test0", result.Items[0]["create"].Index)
+					assert.Equal(t, "test4", result.Items[1]["create"].Index)
+					assert.Equal(t, "test5", result.Items[2]["create"].Index)
+					assert.Equal(t, "test6", result.Items[3]["create"].Index)
+					assert.Equal(t, "test9", result.Items[4]["create"].Index)
+					assert.Equal(t, "test10", result.Items[5]["create"].Index)
+					assert.Equal(t, "test11", result.Items[6]["create"].Index)
+
+					for i, item := range result.Items {
+						switch i {
+						case 0, 1, 3, 5, 6:
+							itemResp := item["create"]
+							itemResp.Status = http.StatusTooManyRequests
+							itemResp.Error.Type = "too_many_requests"
+							itemResp.Error.Reason = "for testing"
+							item["create"] = itemResp
+							result.HasErrors = true
+						}
+					}
+					json.NewEncoder(w).Encode(result)
+					return
+				}
+				require.Len(t, result.Items, 6)
+				assert.Equal(t, "test0", result.Items[0]["create"].Index)
+				assert.Equal(t, "test4", result.Items[1]["create"].Index)
+				assert.Equal(t, "test6", result.Items[2]["create"].Index)
+				assert.Equal(t, "test10", result.Items[3]["create"].Index)
+				assert.Equal(t, "test11", result.Items[4]["create"].Index)
+				assert.Equal(t, "test12", result.Items[5]["create"].Index)
+				json.NewEncoder(w).Encode(result)
+				done.Store(true)
+			})
+
+			tc.cfg.Client = client
+			indexer, err := docappender.NewBulkIndexer(tc.cfg)
+			require.NoError(t, err)
+
+			const N = 10
+			for i := 0; i < N; i++ {
+				err := indexer.Add(docappender.BulkIndexerItem{
+					Index: fmt.Sprintf("test%d", i),
+					Body:  newJSONReader(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)}),
+				})
+				require.NoError(t, err)
+			}
+
+			// First flush - some documents fail and are retried
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(5), stat.Indexed)     // 5 succeeded
+			require.Equal(t, int64(5), stat.RetriedDocs) // 5 failed and retried
+			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "test10",
+				Body:  newJSONReader(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)}),
+			})
+			require.NoError(t, err)
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "test11",
+				Body:  newJSONReader(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)}),
+			})
+			require.NoError(t, err)
+
+			// Second flush - more retries
+			stat, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(2), stat.Indexed)     // 2 succeeded
+			require.Equal(t, int64(5), stat.RetriedDocs) // 5 failed and retried again
+			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "test12",
+				Body:  newJSONReader(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)}),
+			})
+			require.NoError(t, err)
+
+			// Final flush - all documents should succeed
+			stat, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(6), stat.Indexed)     // All 6 remaining documents succeed
+			require.Equal(t, int64(0), stat.RetriedDocs) // No more retries needed
+			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+
+			require.Eventually(t, func() bool {
+				return done.Load()
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for completion")
+		})
+	}
+}
+
+func TestBulkIndexerRetryDocument_RetryOnDocumentStatus(t *testing.T) {
+	testCases := map[string]struct {
+		status      int
+		shouldRetry bool
+		cfg         docappender.BulkIndexerConfig
+	}{
+		"should retry": {
+			status:      500,
+			shouldRetry: true,
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:    1,
+				RetryOnDocumentStatus: []int{429, 500},
+			},
+		},
+		"should not retry": {
+			status:      500,
+			shouldRetry: false,
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:    1,
+				RetryOnDocumentStatus: []int{429},
+			},
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var requestCount atomic.Int32
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				requestCount.Add(1)
+
+				for _, item := range result.Items {
+					itemResp := item["create"]
+					itemResp.Status = tc.status
+					itemResp.Error.Type = "test_error"
+					itemResp.Error.Reason = "for testing"
+					item["create"] = itemResp
+					result.HasErrors = true
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+
+			tc.cfg.Client = client
+			indexer, err := docappender.NewBulkIndexer(tc.cfg)
+			require.NoError(t, err)
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "test1",
+				Body:  strings.NewReader(`{}`),
+			})
+			require.NoError(t, err)
+
+			// First flush
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+
+			if tc.shouldRetry {
+				require.Equal(t, int64(0), stat.Indexed)     // Should not succeed
+				require.Equal(t, int64(1), stat.RetriedDocs) // Should retry
+				require.Len(t, stat.FailedDocs, 0)           // No permanent failures yet
+			} else {
+				require.Equal(t, int64(0), stat.Indexed)     // Should not succeed
+				require.Equal(t, int64(0), stat.RetriedDocs) // Should not retry
+				require.Len(t, stat.FailedDocs, 1)           // Should fail permanently
+			}
+
+			// If there's a retry, flush again to process it
+			if tc.shouldRetry {
+				stat, err = indexer.Flush(context.Background())
+				require.NoError(t, err)
+				// After max retries, should fail permanently
+				require.Len(t, stat.FailedDocs, 1) // Should fail permanently after max retries
+			}
+
+			// Check that we got the expected number of requests
+			expectedRequests := 1
+			if tc.shouldRetry {
+				expectedRequests = 2 // Initial request + retry
+			}
+
+			require.Eventually(t, func() bool {
+				return requestCount.Load() >= int32(expectedRequests)
+			}, 2*time.Second, 50*time.Millisecond, "Expected %d requests, got %d", expectedRequests, requestCount.Load())
+		})
+	}
+}
+
 func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
