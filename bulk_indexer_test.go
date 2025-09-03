@@ -495,6 +495,7 @@ func TestBulkIndexerRetryDocument(t *testing.T) {
 			require.Equal(t, int64(5), stat.Indexed)     // 5 succeeded
 			require.Equal(t, int64(5), stat.RetriedDocs) // 5 failed and retried
 			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+			require.Equal(t, 5, indexer.Items())         // 5 documents are queued for retry
 
 			err = indexer.Add(docappender.BulkIndexerItem{
 				Index: "test10",
@@ -508,12 +509,15 @@ func TestBulkIndexerRetryDocument(t *testing.T) {
 			})
 			require.NoError(t, err)
 
+			require.Equal(t, 7, indexer.Items()) // 5 retries + 2 new documents
+
 			// Second flush - more retries
 			stat, err = indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(2), stat.Indexed)     // 2 succeeded
 			require.Equal(t, int64(5), stat.RetriedDocs) // 5 failed and retried again
 			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+			require.Equal(t, 5, indexer.Items())         // 5 documents still queued for retry
 
 			err = indexer.Add(docappender.BulkIndexerItem{
 				Index: "test12",
@@ -521,12 +525,15 @@ func TestBulkIndexerRetryDocument(t *testing.T) {
 			})
 			require.NoError(t, err)
 
+			require.Equal(t, 6, indexer.Items()) // 5 retries + 1 new document
+
 			// Final flush - all documents should succeed
 			stat, err = indexer.Flush(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, int64(6), stat.Indexed)     // All 6 remaining documents succeed
 			require.Equal(t, int64(0), stat.RetriedDocs) // No more retries needed
 			require.Len(t, stat.FailedDocs, 0)           // no permanent failures
+			require.Equal(t, 0, indexer.Items())         // No documents left in the indexer
 
 			require.Eventually(t, func() bool {
 				return done.Load()
