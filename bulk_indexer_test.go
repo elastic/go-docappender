@@ -542,6 +542,109 @@ func TestBulkIndexerRetryDocument(t *testing.T) {
 	}
 }
 
+func TestBulkIndexerRetryDocument_PermanentFailures(t *testing.T) {
+	testCases := map[string]struct {
+		cfg docappender.BulkIndexerConfig
+	}{
+		"nocompression": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:    2, // Low retry limit to trigger permanent failures
+				RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
+			},
+		},
+		"populateFailedDocsInput": {
+			cfg: docappender.BulkIndexerConfig{
+				MaxDocumentRetries:      2, // Low retry limit to trigger permanent failures
+				RetryOnDocumentStatus:   []int{http.StatusTooManyRequests},
+				PopulateFailedDocsInput: true,
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var requestCount atomic.Int32
+			var done atomic.Bool
+
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				requestNum := requestCount.Add(1)
+
+				// Always fail the first 3 documents with 429 errors
+				for i, item := range result.Items {
+					if i < 3 {
+						itemResp := item["create"]
+						itemResp.Status = http.StatusTooManyRequests
+						itemResp.Error.Type = "too_many_requests"
+						itemResp.Error.Reason = "for testing permanent failures"
+						item["create"] = itemResp
+						result.HasErrors = true
+					}
+				}
+				json.NewEncoder(w).Encode(result)
+				if requestNum >= 3 {
+					done.Store(true)
+				}
+			})
+
+			tc.cfg.Client = client
+			indexer, err := docappender.NewBulkIndexer(tc.cfg)
+			require.NoError(t, err)
+
+			// Add 5 documents
+			for i := 0; i < 5; i++ {
+				err := indexer.Add(docappender.BulkIndexerItem{
+					Index: fmt.Sprintf("test%d", i),
+					Body:  newJSONReader(map[string]any{"@timestamp": time.Now().Format(docappendertest.TimestampFormat)}),
+				})
+				require.NoError(t, err)
+			}
+
+			// First flush - 3 documents fail and are retried, 2 succeed
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(2), stat.Indexed)     // 2 succeeded (test3, test4)
+			require.Equal(t, int64(3), stat.RetriedDocs) // 3 failed and retried (test0, test1, test2)
+			require.Len(t, stat.FailedDocs, 0)           // no permanent failures yet
+			require.Equal(t, 3, indexer.Items())         // 3 documents are queued for retry
+
+			// Second flush - same 3 documents fail again (retry count = 2)
+			stat, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(0), stat.Indexed)     // none succeeded
+			require.Equal(t, int64(3), stat.RetriedDocs) // 3 failed and retried again
+			require.Len(t, stat.FailedDocs, 0)           // no permanent failures yet (retry count = 2)
+			require.Equal(t, 3, indexer.Items())         // 3 documents still queued for retry
+
+			// Third flush - max retries (2) exceeded, documents become permanently failed
+			stat, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int64(0), stat.Indexed)     // none succeeded
+			require.Equal(t, int64(0), stat.RetriedDocs) // no more retries (max exceeded)
+			require.Len(t, stat.FailedDocs, 3)           // 3 permanent failures
+			require.Equal(t, 0, indexer.Items())         // no documents left in the indexer
+
+			// Verify the right documents are marked as failed
+			require.Equal(t, "test0", stat.FailedDocs[0].Index)
+			require.Equal(t, "test1", stat.FailedDocs[1].Index)
+			require.Equal(t, "test2", stat.FailedDocs[2].Index)
+			for _, failedDoc := range stat.FailedDocs {
+				require.Equal(t, http.StatusTooManyRequests, failedDoc.Status)
+				require.Equal(t, "too_many_requests", failedDoc.Error.Type)
+				if tc.cfg.PopulateFailedDocsInput {
+					require.NotEmpty(t, failedDoc.Input)
+				} else {
+					require.Empty(t, failedDoc.Input)
+				}
+			}
+
+			require.Eventually(t, func() bool {
+				return done.Load()
+			}, 2*time.Second, 50*time.Millisecond, "timed out waiting for completion")
+		})
+	}
+}
+
 func TestBulkIndexerRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 	testCases := map[string]struct {
 		status      int
