@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strconv"
 	"unsafe"
 
@@ -70,7 +69,6 @@ type BulkIndexer struct {
 	jsonw              fastjson.Writer
 	writer             *countWriter
 	gzipw              *gzip.Writer
-	copyBuf            []byte
 	buf                bytes.Buffer
 	retryCounts        map[int]int
 	requireDataStream  bool
@@ -434,15 +432,6 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 	}
 
-	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
-		n := b.buf.Len()
-		if cap(b.copyBuf) < n {
-			b.copyBuf = slices.Grow(b.copyBuf, n-len(b.copyBuf))
-		}
-		b.copyBuf = b.copyBuf[:n]
-		copy(b.copyBuf, b.buf.Bytes())
-	}
-
 	req, err := b.newBulkIndexRequest(ctx)
 	if err != nil {
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to create bulk index request: %w", err)
@@ -460,6 +449,16 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		return BulkIndexerResponseStat{}, fmt.Errorf("failed to execute the request: %w", err)
 	}
 	defer res.Body.Close()
+
+	// original bulk request body
+	bodyBuf := b.buf.Bytes()
+	if b.gzipw == nil {
+		// if compression is disabled the retry mechanism doesn't
+		// create a temporary slice and uses the buffer directly
+		// so we have to copy it
+		bodyBuf = make([]byte, len(b.buf.Bytes()))
+		copy(bodyBuf, b.buf.Bytes())
+	}
 
 	// Reset the buffer and gzip writer so they can be reused in case
 	// document level retries are needed.
@@ -542,7 +541,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 		var gr *gzip.Reader
 		if b.gzipw != nil {
-			gr, err = gzip.NewReader(bytes.NewReader(b.copyBuf))
+			gr, err = gzip.NewReader(bytes.NewReader(bodyBuf))
 			if err != nil {
 				return resp, fmt.Errorf("failed to decompress request payload: %w", err)
 			}
@@ -623,10 +622,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					to.Write(buf[startIdx:endIdx])
 				}
 			} else {
-				startIdx := indexnth(b.copyBuf[lastIdx:], startln-lastln, '\n') + 1
-				endIdx := indexnth(b.copyBuf[lastIdx:], endln-lastln, '\n') + 1
+				startIdx := indexnth(bodyBuf[lastIdx:], startln-lastln, '\n') + 1
+				endIdx := indexnth(bodyBuf[lastIdx:], endln-lastln, '\n') + 1
 
-				to.Write(b.copyBuf[lastIdx:][startIdx:endIdx])
+				to.Write(bodyBuf[lastIdx:][startIdx:endIdx])
 
 				lastln = endln
 				lastIdx += endIdx
