@@ -175,6 +175,82 @@ func TestBulkIndexer(t *testing.T) {
 	}
 }
 
+func TestBulkIndexer_Codec(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+
+		compressionLevel int
+		itemsCount       int
+	}{
+		{
+			name:             "no_items_uncompressed",
+			compressionLevel: gzip.NoCompression,
+			itemsCount:       0,
+		},
+		{
+			name:             "no_items_compressed",
+			compressionLevel: gzip.BestCompression,
+			itemsCount:       0,
+		},
+		{
+			name:             "uncompressed",
+			compressionLevel: gzip.NoCompression,
+			itemsCount:       101,
+		},
+		{
+			name:             "compressed",
+			compressionLevel: gzip.BestCompression,
+			itemsCount:       1001,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+				json.NewEncoder(w).Encode(result)
+			})
+			idx1, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.compressionLevel,
+			})
+			require.NoError(t, err)
+			for i := 0; i < tc.itemsCount; i++ {
+				require.NoError(t, idx1.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+					}),
+				}))
+			}
+			b, err := idx1.AppendBinary(nil)
+			require.NoError(t, err)
+			expectedSize := idx1.Size(docappender.BytesSizer)
+
+			idx2, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.compressionLevel,
+			})
+			require.NoError(t, err)
+			_, err = idx2.UnmarshalBinary(b)
+			require.NoError(t, err)
+			assert.Equal(t, tc.itemsCount, idx2.Items())
+			assert.Equal(t, expectedSize, idx2.Size(docappender.BytesSizer))
+
+			// Add another item to the new indexer
+			require.NoError(t, idx2.Add(docappender.BulkIndexerItem{
+				Index: "testidx",
+				Body: newJSONReader(map[string]any{
+					"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+				}),
+			}))
+			stat, err := idx2.Flush(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, int64(tc.itemsCount)+1, stat.Indexed)
+		})
+	}
+}
+
 func TestBulkIndexer_Merge(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -238,13 +314,13 @@ func TestBulkIndexer_Merge(t *testing.T) {
 			})
 			sourceIndexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 				Client:             client,
-				MaxDocumentRetries: 100_000, // disable retry
+				MaxDocumentRetries: 0, // disable retry
 				CompressionLevel:   tc.sourceCompressionLevel,
 			})
 			require.NoError(t, err)
 			targetIndexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 				Client:             client,
-				MaxDocumentRetries: 100_000, // disable retry
+				MaxDocumentRetries: 0, // disable retry
 				CompressionLevel:   tc.targetCompressionLevel,
 			})
 			require.NoError(t, err)
@@ -332,7 +408,7 @@ func TestBulkIndexer_Split(t *testing.T) {
 			})
 			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 				Client:             client,
-				MaxDocumentRetries: 100_000, // disable retry
+				MaxDocumentRetries: 0, // disable retry
 				CompressionLevel:   tc.sourceCompressionLevel,
 			})
 			require.NoError(t, err)
@@ -657,6 +733,55 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 				t.Run(fmt.Sprintf("compression_level=%d", compressionLevel), func(t *testing.T) {
 					test(enabled, compressionLevel)
 				})
+			}
+		})
+	}
+}
+
+func BenchmarkAppendBinary(b *testing.B) {
+	itemsCount := 100000
+	for _, bc := range []struct {
+		name        string
+		compression int
+	}{
+		{
+			name:        "uncompressed",
+			compression: gzip.NoCompression,
+		},
+		{
+			name:        "compressed",
+			compression: gzip.BestCompression,
+		},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			client := docappendertest.NewMockElasticsearchClient(
+				b, func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				},
+			)
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0,
+				CompressionLevel:   bc.compression,
+			})
+			require.NoError(b, err)
+
+			for i := 0; i < itemsCount; i++ {
+				require.NoError(b, indexer.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+					}),
+				}))
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, err = indexer.AppendBinary(nil)
+				if err != nil {
+					// Error check to avoid benchmarking `require` overhead
+					require.NoError(b, err)
+				}
 			}
 		})
 	}

@@ -21,6 +21,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -834,6 +835,50 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	return resp, nil
+}
+
+func (b *BulkIndexer) AppendBinary(data []byte) ([]byte, error) {
+	if b.itemsAdded == 0 {
+		return data, nil
+	}
+
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return nil, fmt.Errorf("failed closing the gzip writer: %w", err)
+		}
+	}
+
+	data = binary.AppendVarint(data, int64(b.itemsAdded))
+	data = binary.AppendVarint(data, int64(b.bytesFlushed))
+	data = binary.AppendVarint(data, int64(b.bytesUncompFlushed))
+	data = binary.AppendVarint(data, int64(b.buf.Len()))
+	data = append(data, b.buf.Bytes()...)
+	return data, nil
+}
+
+func (b *BulkIndexer) UnmarshalBinary(data []byte) (int, error) {
+	var read int
+
+	itemsAdded, n := binary.Varint(data)
+	b.itemsAdded = int(itemsAdded)
+	data = data[n:]
+	read += n
+
+	bytesFlushed, n := binary.Varint(data)
+	b.bytesFlushed = int(bytesFlushed)
+	data = data[n:]
+	read += n
+
+	bytesUncompFlushed, n := binary.Varint(data)
+	b.bytesUncompFlushed = int(bytesUncompFlushed)
+	data = data[n:]
+	read += n
+
+	bufLen, n := binary.Varint(data)
+	endIdx := n + int(bufLen)
+	b.buf = *bytes.NewBuffer(data[n:endIdx])
+
+	return read + endIdx, nil
 }
 
 func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
