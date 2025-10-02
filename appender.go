@@ -169,6 +169,8 @@ func (a *Appender) Close(ctx context.Context) error {
 		<-ctx.Done()
 	}()
 
+	defer a.metrics.availableBulkRequests.Add(context.Background(), -int64(a.config.MaxRequests), metric.WithAttributeSet(a.config.MetricAttributes))
+
 	if err := a.errgroup.Wait(); err != nil {
 		return err
 	}

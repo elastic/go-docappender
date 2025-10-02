@@ -220,7 +220,7 @@ func TestAppenderWithFailureStore(t *testing.T) {
 		case "elasticsearch.events.processed":
 			assertProcessedCounter(m, indexerAttrs)
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, 10, indexerAttrs)
+			assertCounter(m, 0, indexerAttrs)
 		case "elasticsearch.indexer.created":
 			assertCounter(m, 1, indexerAttrs)
 		case "elasticsearch.indexer.destroyed":
@@ -445,7 +445,7 @@ func TestAppenderRetryTooMany(t *testing.T) {
 				}
 			}
 		case "elasticsearch.bulk_requests.available":
-			assertCounter(m, int64(1), indexerAttrs)
+			assertCounter(m, int64(0), indexerAttrs)
 		case "elasticsearch.flushed.bytes":
 			assertCounter(m, bytesTotal, indexerAttrs)
 		case "elasticsearch.flushed.uncompressed.bytes":
@@ -553,7 +553,7 @@ func TestAppenderAvailableAppenders(t *testing.T) {
 		case "elasticsearch.bulk_requests.available":
 			counter := m.Data.(metricdata.Sum[int64])
 			for _, dp := range counter.DataPoints {
-				assert.Equal(t, int64(10), dp.Value)
+				assert.Equal(t, int64(0), dp.Value)
 			}
 		}
 	})
@@ -648,7 +648,7 @@ func TestAppenderCompressionLevel(t *testing.T) {
 		case "elasticsearch.bulk_requests.available":
 			counter := m.Data.(metricdata.Sum[int64])
 			for _, dp := range counter.DataPoints {
-				assert.Equal(t, int64(10), dp.Value)
+				assert.Equal(t, int64(0), dp.Value)
 			}
 		case "elasticsearch.flushed.bytes":
 			counter := m.Data.(metricdata.Sum[int64])
@@ -957,7 +957,7 @@ func TestAppenderFlushRequestError(t *testing.T) {
 						asserted.Add(1)
 						counter := m.Data.(metricdata.Sum[int64])
 						for _, dp := range counter.DataPoints {
-							assert.Equal(t, int64(10), dp.Value)
+							assert.Equal(t, int64(0), dp.Value)
 						}
 					case "elasticsearch.flushed.bytes":
 						asserted.Add(1)
@@ -1671,7 +1671,7 @@ func TestAppenderCloseBusyIndexer(t *testing.T) {
 		case "elasticsearch.bulk_requests.available":
 			counter := m.Data.(metricdata.Sum[int64])
 			for _, dp := range counter.DataPoints {
-				assert.Equal(t, int64(10), dp.Value)
+				assert.Equal(t, int64(0), dp.Value)
 			}
 		case "elasticsearch.flushed.bytes":
 			counter := m.Data.(metricdata.Sum[int64])
@@ -2138,7 +2138,7 @@ func TestAppenderScaling(t *testing.T) {
 			case "elasticsearch.bulk_requests.available":
 				counter := m.Data.(metricdata.Sum[int64])
 				for _, dp := range counter.DataPoints {
-					assert.Equal(t, int64(10), dp.Value)
+					assert.Equal(t, int64(0), dp.Value)
 				}
 			case "elasticsearch.bulk_requests.inflight":
 				counter := m.Data.(metricdata.Sum[int64])
