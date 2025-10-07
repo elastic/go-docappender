@@ -421,7 +421,7 @@ func (b *BulkIndexer) Merge(other *BulkIndexer) error {
 		// All compression levels
 		if other.gzipw != nil {
 			if err := other.gzipw.Close(); err != nil {
-				return fmt.Errorf("failed to merge compressed bulk indexers:%w", err)
+				return fmt.Errorf("failed to merge compressed bulk indexers: %w", err)
 			}
 		}
 		othergzip, err := gzip.NewReader(bytes.NewReader(other.buf.Bytes()))
@@ -449,10 +449,9 @@ func (b *BulkIndexer) Split(maxSize int, sizerType SizerType) ([]*BulkIndexer, e
 		return []*BulkIndexer{b}, nil
 	}
 
-	var err error
 	// Split of `b` is needed. If `gzip` writer is used then close it before splitting.
 	if b.gzipw != nil {
-		if err = b.gzipw.Close(); err != nil {
+		if err := b.gzipw.Close(); err != nil {
 			return nil, fmt.Errorf("failed to split bulk request, failed to close gzip writer: %w", err)
 		}
 	}
@@ -486,17 +485,15 @@ func (b *BulkIndexer) Split(maxSize int, sizerType SizerType) ([]*BulkIndexer, e
 			}
 			return nil, fmt.Errorf("failed to split bulk requests, failed to read metadata: %w, %v", err, meta)
 		}
-		_, err = tmpBuffer.Write(meta)
-		if err != nil {
+		if _, err := tmpBuffer.Write(meta); err != nil {
 			return nil, fmt.Errorf("failed to split bulk requests, failed to write metadata: %w", err)
 		}
 
 		data, err := reader.ReadSlice('\n')
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to split bulk requests, failed to read item: %w", err)
 		}
-		_, err = tmpBuffer.Write(data)
-		if err != nil {
+		if _, err := tmpBuffer.Write(data); err != nil {
 			return nil, fmt.Errorf("failed to split bulk requests, failed to write item: %w", err)
 		}
 
