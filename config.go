@@ -323,6 +323,9 @@ type BulkIndexerConfig struct {
 	// of go-docappender enabling this should relay this warning to
 	// their users. Setting this will also add memory overhead.
 	PopulateFailedDocsInput bool
+
+	// Dictionary of key-value pairs to pass with the bulk request
+	QueryParams map[string]string
 }
 
 // Validate checks the configuration for errors.

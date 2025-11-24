@@ -399,6 +399,11 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	req.Header.Add(HeaderEventCount, strconv.Itoa(b.itemsAdded))
 	req.Header.Add(HeaderUncompressedLength, strconv.Itoa(b.UncompressedLen()))
 	v := req.URL.Query()
+	if len(b.config.QueryParams) != 0 {
+		for key, val := range b.config.QueryParams {
+			v.Add(key, val)
+		}
+	}
 	if b.config.Pipeline != "" {
 		v.Set("pipeline", b.config.Pipeline)
 	}
