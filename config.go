@@ -325,7 +325,7 @@ type BulkIndexerConfig struct {
 	PopulateFailedDocsInput bool
 
 	// Dictionary of key-value pairs to pass with the bulk request
-	QueryParams map[string]string
+	QueryParams map[string][]string
 }
 
 // Validate checks the configuration for errors.
