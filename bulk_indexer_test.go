@@ -258,6 +258,16 @@ func TestQueryParams(t *testing.T) {
 
 		require.True(t, queryParams.Has("_source"))
 		require.Equal(t, sourceFields, queryParams["_source"])
+
+		_, result, _, _, _ := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+
+	})
+
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+		QueryParams: map[string][]string{
 			"_source": sourceFields,
 		},
 	})
@@ -269,7 +279,6 @@ func TestQueryParams(t *testing.T) {
 			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
 		}),
 	})
-
 	require.NoError(t, err)
 
 	_, err = indexer.Flush(context.Background())
