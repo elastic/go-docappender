@@ -400,11 +400,9 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	req.Header.Add(HeaderUncompressedLength, strconv.Itoa(b.UncompressedLen()))
 	v := req.URL.Query()
 
-	if len(b.config.QueryParams) != 0 {
-		for key, valSlice := range b.config.QueryParams {
-			for _, value := range valSlice {
-				v.Add(key, value)
-			}
+	for key, valSlice := range b.config.QueryParams {
+		for _, value := range valSlice {
+			v.Add(key, value)
 		}
 	}
 
