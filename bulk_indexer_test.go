@@ -251,11 +251,22 @@ func TestPipeline(t *testing.T) {
 }
 
 func TestQueryParams(t *testing.T) {
+	sourceFields := []string{"message", "timestamp"}
+
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		queryParams := r.URL.Query()
-		// requires query param to have pipeline
-		require.True(t, queryParams.Has("pipeline"))
-		require.Equal(t, "test-pipeline", queryParams.Get("pipeline"))
+
+		// check is query params exists
+		require.True(t, queryParams.Has("_source"))
+
+		// test all values are present
+		for key, valSlice := range queryParams {
+			if key == "_source" {
+				for i, val := range valSlice {
+					require.Equal(t, sourceFields[i], val)
+				}
+			}
+		}
 
 		_, result, _, _, _ := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
 		err := json.NewEncoder(w).Encode(result)
@@ -265,7 +276,7 @@ func TestQueryParams(t *testing.T) {
 	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
 		Client: client,
 		QueryParams: map[string][]string{
-			"pipeline": []string{"test-pipeline"},
+			"_source": sourceFields,
 		},
 	})
 	require.NoError(t, err)
