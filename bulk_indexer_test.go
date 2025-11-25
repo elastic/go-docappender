@@ -250,6 +250,39 @@ func TestPipeline(t *testing.T) {
 	require.Equal(t, int64(2), stat.Indexed)
 }
 
+func TestQueryParams(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		queryParams := r.URL.Query()
+		// requires query param to have pipeline
+		require.True(t, queryParams.Has("pipeline"))
+		require.Equal(t, "test-pipeline", queryParams.Get("pipeline"))
+
+		_, result, _, _, _ := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
+		err := json.NewEncoder(w).Encode(result)
+		require.NoError(t, err)
+	})
+
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+		QueryParams: map[string][]string{
+			"pipeline": []string{"test-pipeline"},
+		},
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "testidx",
+		Body: newJSONReader(map[string]any{
+			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+		}),
+	})
+
+	require.NoError(t, err)
+
+	_, err = indexer.Flush(context.Background())
+	require.NoError(t, err)
+}
+
 func TestAction(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, result := docappendertest.DecodeBulkRequest(r)
