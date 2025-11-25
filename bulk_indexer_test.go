@@ -256,17 +256,8 @@ func TestQueryParams(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		queryParams := r.URL.Query()
 
-		// check is query params exists
 		require.True(t, queryParams.Has("_source"))
-
-		// test all values are present
-		for key, valSlice := range queryParams {
-			if key == "_source" {
-				for i, val := range valSlice {
-					require.Equal(t, sourceFields[i], val)
-				}
-			}
-		}
+		require.Equal(t, sourceFields, queryParams["_source"])
 
 		_, result, _, _, _ := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplatesAndPipelines(r)
 		err := json.NewEncoder(w).Encode(result)
