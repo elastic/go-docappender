@@ -249,7 +249,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	if a.otelTracingEnabled() {
 		ctx, span = a.tracer.Start(ctx, "docappender.flush", trace.WithAttributes(
 			attribute.Int("documents", n),
-		))
+		), trace.WithSpanKind(trace.SpanKindInternal))
 		defer span.End()
 
 		// Add trace IDs to logger, to associate any per-item errors
