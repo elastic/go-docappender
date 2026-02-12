@@ -854,3 +854,54 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 		})
 	}
 }
+
+func TestSkipReturningIndex(t *testing.T) {
+	filterPathWithIndex := "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
+	filterPathWithoutIndex := "items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
+
+	for _, tc := range []struct {
+		name               string
+		skipReturningIndex bool
+		expectedFilterPath string
+	}{
+		{
+			name:               "skip_returning_index",
+			skipReturningIndex: true,
+			expectedFilterPath: filterPathWithoutIndex,
+		},
+		{
+			name:               "explicit_false",
+			skipReturningIndex: false,
+			expectedFilterPath: filterPathWithIndex,
+		},
+		{
+			name:               "default_zero_value",
+			expectedFilterPath: filterPathWithIndex,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				filterPath := r.URL.Query().Get("filter_path")
+				assert.Equal(t, tc.expectedFilterPath, filterPath)
+
+				_, result := docappendertest.DecodeBulkRequest(r)
+				json.NewEncoder(w).Encode(result)
+			})
+
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				SkipReturningIndex: tc.skipReturningIndex,
+			})
+			require.NoError(t, err)
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "testidx",
+				Body:  strings.NewReader(`{"message":"test"}`),
+			})
+			require.NoError(t, err)
+
+			_, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+		})
+	}
+}
