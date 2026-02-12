@@ -326,6 +326,13 @@ type BulkIndexerConfig struct {
 
 	// Dictionary of key-value pairs to pass with the bulk request
 	QueryParams map[string][]string
+
+	// SkipReturningIndex, if set to True, the filter_path will
+	// not contain "items.*._index," which means that the "_index" field
+	// will not be returned for each item in the bulk event.  Dropping
+	// this field will significantly reduce the size of the response if
+	// the field is not required.  SkipReturningIndex is Unset by default
+	SkipReturningIndex bool
 }
 
 // Validate checks the configuration for errors.
