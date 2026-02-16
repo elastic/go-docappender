@@ -175,6 +175,270 @@ func TestBulkIndexer(t *testing.T) {
 	}
 }
 
+func TestBulkIndexer_Codec(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+
+		compressionLevel int
+		itemsCount       int
+	}{
+		{
+			name:             "no_items_uncompressed",
+			compressionLevel: gzip.NoCompression,
+			itemsCount:       0,
+		},
+		{
+			name:             "no_items_compressed",
+			compressionLevel: gzip.BestCompression,
+			itemsCount:       0,
+		},
+		{
+			name:             "uncompressed",
+			compressionLevel: gzip.NoCompression,
+			itemsCount:       101,
+		},
+		{
+			name:             "compressed",
+			compressionLevel: gzip.BestCompression,
+			itemsCount:       1001,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+				json.NewEncoder(w).Encode(result)
+			})
+			idx1, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.compressionLevel,
+			})
+			require.NoError(t, err)
+			for i := 0; i < tc.itemsCount; i++ {
+				require.NoError(t, idx1.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+					}),
+				}))
+			}
+			b, err := idx1.AppendBinary(nil)
+			require.NoError(t, err)
+			expectedSize := idx1.Size(docappender.BytesSizer)
+
+			idx2, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.compressionLevel,
+			})
+			require.NoError(t, err)
+			_, err = idx2.UnmarshalBinary(b)
+			require.NoError(t, err)
+			assert.Equal(t, tc.itemsCount, idx2.Items())
+			assert.Equal(t, expectedSize, idx2.Size(docappender.BytesSizer))
+
+			// Add another item to the new indexer
+			require.NoError(t, idx2.Add(docappender.BulkIndexerItem{
+				Index: "testidx",
+				Body: newJSONReader(map[string]any{
+					"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+				}),
+			}))
+			stat, err := idx2.Flush(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, int64(tc.itemsCount)+1, stat.Indexed)
+		})
+	}
+}
+
+func TestBulkIndexer_Merge(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+
+		sourceCompressionLevel int
+		sourceIndexerItems     int
+
+		targetCompressionLevel int
+		targetIndexerItems     int
+
+		expectedErr string
+	}{
+		{
+			name:                   "src_target_empty",
+			sourceCompressionLevel: gzip.NoCompression,
+			sourceIndexerItems:     0,
+			targetCompressionLevel: gzip.NoCompression,
+			targetIndexerItems:     0,
+		},
+		{
+			name:                   "src_empty",
+			sourceCompressionLevel: gzip.NoCompression,
+			sourceIndexerItems:     0,
+			targetCompressionLevel: gzip.NoCompression,
+			targetIndexerItems:     100,
+		},
+		{
+			name:                   "target_empty",
+			sourceCompressionLevel: gzip.NoCompression,
+			sourceIndexerItems:     100,
+			targetCompressionLevel: gzip.NoCompression,
+			targetIndexerItems:     0,
+		},
+		{
+			name:                   "merge_with_both_data",
+			sourceCompressionLevel: gzip.NoCompression,
+			sourceIndexerItems:     100,
+			targetCompressionLevel: gzip.NoCompression,
+			targetIndexerItems:     20,
+		},
+		{
+			name:                   "compressed",
+			sourceCompressionLevel: gzip.BestCompression,
+			sourceIndexerItems:     100,
+			targetCompressionLevel: gzip.BestCompression,
+			targetIndexerItems:     20,
+		},
+		{
+			name:                   "different_compression",
+			sourceCompressionLevel: gzip.BestCompression,
+			sourceIndexerItems:     100,
+			targetCompressionLevel: gzip.BestSpeed,
+			targetIndexerItems:     20,
+			expectedErr:            "only same compression level merge is supported",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+				json.NewEncoder(w).Encode(result)
+			})
+			sourceIndexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.sourceCompressionLevel,
+			})
+			require.NoError(t, err)
+			targetIndexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.targetCompressionLevel,
+			})
+			require.NoError(t, err)
+			generateLoad := func(items int, indexer *docappender.BulkIndexer) {
+				for indexer.Items() != items {
+					require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+						Index: "testidx",
+						Body: newJSONReader(map[string]any{
+							"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+						}),
+					}))
+				}
+			}
+
+			generateLoad(tc.sourceIndexerItems, sourceIndexer)
+			generateLoad(tc.targetIndexerItems, targetIndexer)
+
+			totalItems := tc.sourceIndexerItems + tc.targetIndexerItems
+			err = targetIndexer.Merge(sourceIndexer)
+			if tc.expectedErr == "" {
+				require.NoError(t, err)
+				assert.Equal(t, totalItems, targetIndexer.Items())
+				stat, err := targetIndexer.Flush(context.Background())
+				require.NoError(t, err)
+				assert.Equal(t, totalItems, int(stat.Indexed))
+			} else {
+				require.ErrorContains(t, err, tc.expectedErr)
+			}
+		})
+	}
+}
+
+func TestBulkIndexer_Split(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+
+		sourceIndexerMinSize   int // used to populate test data
+		sourceCompressionLevel int
+
+		maxSize   int
+		sizerType docappender.SizerType
+
+		expectedErr string
+	}{
+		{
+			name:                   "empty",
+			maxSize:                10,
+			sizerType:              docappender.ItemsCountSizer,
+			sourceIndexerMinSize:   0,
+			sourceCompressionLevel: gzip.BestCompression,
+		},
+		{
+			name:                   "uncompressed_items_split",
+			maxSize:                100,
+			sizerType:              docappender.ItemsCountSizer,
+			sourceIndexerMinSize:   205,
+			sourceCompressionLevel: gzip.NoCompression,
+		},
+		{
+			name:                   "uncompressed_bytes_split",
+			maxSize:                10_000,
+			sizerType:              docappender.BytesSizer,
+			sourceIndexerMinSize:   1_000_005,
+			sourceCompressionLevel: gzip.NoCompression,
+		},
+		{
+			name:                   "compressed_items_split",
+			maxSize:                100,
+			sizerType:              docappender.ItemsCountSizer,
+			sourceIndexerMinSize:   205,
+			sourceCompressionLevel: gzip.BestCompression,
+		},
+		{
+			name:                   "compressed_bytes_split",
+			maxSize:                10_000,
+			sizerType:              docappender.BytesSizer,
+			sourceIndexerMinSize:   1_000_005,
+			sourceCompressionLevel: gzip.BestCompression,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+				json.NewEncoder(w).Encode(result)
+			})
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0, // disable retry
+				CompressionLevel:   tc.sourceCompressionLevel,
+			})
+			require.NoError(t, err)
+
+			// Populate the required indexer to size
+			for indexer.Size(tc.sizerType) < tc.sourceIndexerMinSize {
+				require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+					}),
+				}))
+			}
+			totalItems := indexer.Items()
+
+			splitBulkIndexers, err := indexer.Split(tc.maxSize, tc.sizerType)
+			require.NoError(t, err)
+
+			var indexedItems int
+			for _, bi := range splitBulkIndexers {
+				stat, err := bi.Flush(context.Background())
+				require.NoError(t, err)
+				assert.LessOrEqual(t, bi.Size(tc.sizerType), tc.maxSize)
+				indexedItems += int(stat.Indexed)
+			}
+			assert.Equal(t, totalItems, indexedItems)
+		})
+	}
+}
+
 func TestDynamicTemplates(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, result, _, dynamicTemplates := docappendertest.DecodeBulkRequestWithStatsAndDynamicTemplates(r)
@@ -850,6 +1114,111 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 				t.Run(fmt.Sprintf("compression_level=%d", compressionLevel), func(t *testing.T) {
 					test(enabled, compressionLevel)
 				})
+			}
+		})
+	}
+}
+
+func BenchmarkAppendBinary(b *testing.B) {
+	itemsCount := 100000
+	for _, bc := range []struct {
+		name        string
+		compression int
+	}{
+		{
+			name:        "uncompressed",
+			compression: gzip.NoCompression,
+		},
+		{
+			name:        "compressed",
+			compression: gzip.BestCompression,
+		},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			client := docappendertest.NewMockElasticsearchClient(
+				b, func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				},
+			)
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 0,
+				CompressionLevel:   bc.compression,
+			})
+			require.NoError(b, err)
+
+			for i := 0; i < itemsCount; i++ {
+				require.NoError(b, indexer.Add(docappender.BulkIndexerItem{
+					Index: "testidx",
+					Body: newJSONReader(map[string]any{
+						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+					}),
+				}))
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, err = indexer.AppendBinary(nil)
+				if err != nil {
+					// Error check to avoid benchmarking `require` overhead
+					require.NoError(b, err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkMerge(b *testing.B) {
+	client := docappendertest.NewMockElasticsearchClient(
+		b, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
+	)
+	newIndexerCfg := func(compression int) docappender.BulkIndexerConfig {
+		return docappender.BulkIndexerConfig{
+			Client:             client,
+			MaxDocumentRetries: 0,
+			CompressionLevel:   compression,
+		}
+	}
+	for _, bc := range []struct {
+		name        string
+		compression int
+	}{
+		{
+			name:        "uncompressed",
+			compression: gzip.NoCompression,
+		},
+		{
+			name:        "compressed",
+			compression: gzip.BestCompression,
+		},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			// prepare bulk indexers for benchmarking merge
+			bulkIndexers := make([]*docappender.BulkIndexer, 0, b.N)
+			for i := 0; i < b.N; i++ {
+				indexer, err := docappender.NewBulkIndexer(newIndexerCfg(bc.compression))
+				require.NoError(b, err)
+
+				for j := 0; j < 100; j++ {
+					require.NoError(b, indexer.Add(docappender.BulkIndexerItem{
+						Index: "testidx",
+						Body: newJSONReader(map[string]any{
+							"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+						}),
+					}))
+				}
+				bulkIndexers = append(bulkIndexers, indexer)
+			}
+			// create final indexer that will merge data from all other indexers
+			final, err := docappender.NewBulkIndexer(newIndexerCfg(bc.compression))
+			require.NoError(b, err)
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				assert.NoError(b, final.Merge(bulkIndexers[i]))
 			}
 		})
 	}
