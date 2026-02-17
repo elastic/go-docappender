@@ -59,6 +59,8 @@ const (
 	HeaderUncompressedLength = "X-Elastic-Uncompressed-Request-Length"
 )
 
+var baseFilterPath = "items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
+
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
 type BulkIndexer struct {
@@ -72,6 +74,7 @@ type BulkIndexer struct {
 	buf                bytes.Buffer
 	retryCounts        map[int]int
 	requireDataStream  bool
+	itemIndexes        []string
 }
 
 type BulkIndexerResponseStat struct {
@@ -252,6 +255,7 @@ func (b *BulkIndexer) resetBuf() {
 	if b.gzipw != nil {
 		b.gzipw.Reset(&b.buf)
 	}
+	b.itemIndexes = b.itemIndexes[:0]
 }
 
 // Items returns the number of buffered items.
@@ -316,6 +320,7 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 	if _, err := b.writer.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
+	b.itemIndexes = append(b.itemIndexes, item.Index)
 	b.itemsAdded++
 	return nil
 }
@@ -412,7 +417,11 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
+	if !b.config.SkipReturningIndex {
+		v.Set("filter_path", "items.*._index,"+baseFilterPath)
+	} else {
+		v.Set("filter_path", baseFilterPath)
+	}
 	if b.config.IncludeSourceOnError != Unset {
 		switch b.config.IncludeSourceOnError {
 		case False:
@@ -459,6 +468,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	// original bulk request body
 	bodyBuf := b.buf.Bytes()
+
+	// Save per-item indexes before reset so we can use them as a fallback
+	// if the response omits _index.
+	itemIndexes := make([]string, len(b.itemIndexes))
+	copy(itemIndexes, b.itemIndexes)
 
 	// Reset the buffer and gzip writer so they can be reused in case
 	// document level retries are needed.
@@ -511,6 +525,13 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+
+	// If the response omits _index, fall back to the index from the request.
+	for i, doc := range resp.FailedDocs {
+		if doc.Index == "" && doc.Position < len(itemIndexes) {
+			resp.FailedDocs[i].Index = itemIndexes[doc.Position]
+		}
 	}
 
 	if b.config.IncludeSourceOnError == Unset {
@@ -679,6 +700,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					if err := writeItemAtPos(b.writer, item.Position); err != nil {
 						return resp, err
 					}
+					b.itemIndexes = append(b.itemIndexes, item.Index)
 					resp.RetriedDocs++
 					b.itemsAdded++
 				} else {
