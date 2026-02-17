@@ -766,6 +766,110 @@ func TestBulkIndexerRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 	}
 }
 
+func TestFallbackIndexFromRequest(t *testing.T) {
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		for _, itemsMap := range result.Items {
+			for k, item := range itemsMap {
+				// Clear _index from the response to simulate it being missing.
+				item.Index = ""
+				if item.Status == 0 {
+					item.Status = http.StatusCreated
+				}
+				itemsMap[k] = item
+			}
+		}
+		// Fail the first item.
+		if len(result.Items) > 0 {
+			for k, item := range result.Items[0] {
+				result.HasErrors = true
+				item.Status = http.StatusBadRequest
+				item.Error.Type = "validation_error"
+				item.Error.Reason = "for testing"
+				result.Items[0][k] = item
+			}
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client: client,
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "my-index",
+		Body:  strings.NewReader(`{"msg":"hello"}`),
+	})
+	require.NoError(t, err)
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "other-index",
+		Body:  strings.NewReader(`{"msg":"world"}`),
+	})
+	require.NoError(t, err)
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), stat.Indexed)
+	require.Len(t, stat.FailedDocs, 1)
+	assert.Equal(t, "my-index", stat.FailedDocs[0].Index)
+}
+
+func TestFallbackIndexFromRequest_Retry(t *testing.T) {
+	var requestCount atomic.Int32
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, result := docappendertest.DecodeBulkRequest(r)
+		reqNum := requestCount.Add(1)
+		for _, itemsMap := range result.Items {
+			for k, item := range itemsMap {
+				// Clear _index from every response item.
+				item.Index = ""
+				itemsMap[k] = item
+			}
+		}
+		if reqNum == 1 {
+			// First request: fail the first item with 429.
+			for k, item := range result.Items[0] {
+				result.HasErrors = true
+				item.Status = http.StatusTooManyRequests
+				item.Error.Type = "too_many_requests"
+				item.Error.Reason = "for testing"
+				result.Items[0][k] = item
+			}
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client:                client,
+		MaxDocumentRetries:    3,
+		RetryOnDocumentStatus: []int{http.StatusTooManyRequests},
+	})
+	require.NoError(t, err)
+
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "retry-index",
+		Body:  strings.NewReader(`{"msg":"retry"}`),
+	})
+	require.NoError(t, err)
+	err = indexer.Add(docappender.BulkIndexerItem{
+		Index: "ok-index",
+		Body:  strings.NewReader(`{"msg":"ok"}`),
+	})
+	require.NoError(t, err)
+
+	// First flush: first item gets 429 and is retried.
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), stat.Indexed)
+	require.Equal(t, int64(1), stat.RetriedDocs)
+	require.Len(t, stat.FailedDocs, 0)
+
+	// Second flush: retried item succeeds.
+	stat, err = indexer.Flush(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), stat.Indexed)
+	require.Len(t, stat.FailedDocs, 0)
+}
+
 func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
