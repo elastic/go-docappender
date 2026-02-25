@@ -587,6 +587,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 	defer res.Body.Close()
 
+	// Check for 413 error so we can split the batch
+	if res.StatusCode == 413 && b.itemsAdded > 1 {
+		return b.handlePayloadTooLarge(ctx)
+	}
+
 	// original bulk request body
 	bodyBuf := b.buf.Bytes()
 
@@ -629,11 +634,14 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
+		case res.StatusCode == 413:
+			e.payloadTooLarge = true
+			e.clientError = true
 		case res.StatusCode == 429:
 			e.tooMany = true
 		case res.StatusCode >= 500:
 			e.serverError = true
-		case res.StatusCode >= 400 && res.StatusCode != 429:
+		case res.StatusCode >= 400 && res.StatusCode != 429 && res.StatusCode != 413:
 			e.clientError = true
 		}
 		return resp, e
@@ -829,6 +837,78 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	return resp, nil
 }
 
+// handlePayloadTooLarge handles 413 (Request Entity Too Large) errors by splitting
+// the batch in half and recursively retrying each half.
+func (b *BulkIndexer) handlePayloadTooLarge(ctx context.Context) (BulkIndexerResponseStat, error) {
+	// Close gzip writer if needed before splitting
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return BulkIndexerResponseStat{}, fmt.Errorf("failed to close gzip writer before splitting: %w", err)
+		}
+	}
+
+	// Split in half based on item count
+	maxSize := b.itemsAdded / 2
+	if maxSize == 0 {
+		maxSize = 1
+	}
+
+	splits, err := b.Split(maxSize, ItemsCountSizer)
+	if err != nil {
+		return BulkIndexerResponseStat{}, fmt.Errorf("failed to split bulk request: %w", err)
+	}
+
+	// If we only got one split back, it means we can't split further
+	if len(splits) == 1 {
+		// Reset and return the original error
+		b.resetBuf()
+		return BulkIndexerResponseStat{}, ErrorFlushFailed{
+			statusCode:      413,
+			payloadTooLarge: true,
+			clientError:     true,
+			resp:            `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`,
+		}
+	}
+
+	// Reset the original indexer since Split() invalidates it
+	b.resetBuf()
+
+	// Flush each split and accumulate results
+	var combinedStat BulkIndexerResponseStat
+	currentOffset := 0
+
+	for _, split := range splits {
+		splitItemCount := split.itemsAdded
+
+		stat, err := split.Flush(ctx)
+		if err != nil {
+			return combinedStat, err
+		}
+
+		// Accumulate basic stats
+		combinedStat.Indexed += stat.Indexed
+		combinedStat.RetriedDocs += stat.RetriedDocs
+		combinedStat.FailureStoreDocs.Used += stat.FailureStoreDocs.Used
+		combinedStat.FailureStoreDocs.Failed += stat.FailureStoreDocs.Failed
+		combinedStat.FailureStoreDocs.NotEnabled += stat.FailureStoreDocs.NotEnabled
+		if stat.GreatestRetry > combinedStat.GreatestRetry {
+			combinedStat.GreatestRetry = stat.GreatestRetry
+		}
+
+		// Adjust positions for failed docs based on their position in the original batch
+		for _, failedDoc := range stat.FailedDocs {
+			adjustedDoc := failedDoc
+			adjustedDoc.Position += currentOffset
+			combinedStat.FailedDocs = append(combinedStat.FailedDocs, adjustedDoc)
+		}
+
+		// Update offset for next split
+		currentOffset += splitItemCount
+	}
+
+	return combinedStat, nil
+}
+
 func (b *BulkIndexer) AppendBinary(data []byte) ([]byte, error) {
 	if b.itemsAdded == 0 {
 		return data, nil
@@ -899,11 +979,12 @@ func indexnth(s []byte, nth int, sep rune) int {
 }
 
 type ErrorFlushFailed struct {
-	resp        string
-	statusCode  int
-	tooMany     bool
-	clientError bool
-	serverError bool
+	resp            string
+	statusCode      int
+	tooMany         bool
+	clientError     bool
+	serverError     bool
+	payloadTooLarge bool
 }
 
 func (e ErrorFlushFailed) StatusCode() int {
