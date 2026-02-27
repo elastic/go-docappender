@@ -1119,7 +1119,7 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 	}
 }
 
-func TestBulkIndexer_413PayloadTooLarge(t *testing.T) {
+func TestBulkIndexerBatchSplitOn413(t *testing.T) {
 	tests := []struct {
 		name             string
 		compressionLevel int
@@ -1174,8 +1174,9 @@ func TestBulkIndexer_413PayloadTooLarge(t *testing.T) {
 			})
 
 			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-				Client:           client,
-				CompressionLevel: tt.compressionLevel,
+				Client:                client,
+				CompressionLevel:      tt.compressionLevel,
+				EnableBatchSplitOn413: true,
 			})
 			require.NoError(t, err)
 
@@ -1214,7 +1215,7 @@ func TestBulkIndexer_413PayloadTooLarge(t *testing.T) {
 	}
 }
 
-func TestBulkIndexer_413PayloadTooLarge_WithFailures(t *testing.T) {
+func TestBulkIndexerBatchSplitOn413WithFailures(t *testing.T) {
 	var requestCount int64
 
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1268,7 +1269,8 @@ func TestBulkIndexer_413PayloadTooLarge_WithFailures(t *testing.T) {
 	})
 
 	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client: client,
+		Client:                client,
+		EnableBatchSplitOn413: true,
 	})
 	require.NoError(t, err)
 
@@ -1307,7 +1309,7 @@ func TestBulkIndexer_413PayloadTooLarge_WithFailures(t *testing.T) {
 	assert.Equal(t, int64(3), atomic.LoadInt64(&requestCount))
 }
 
-func TestBulkIndexer_413PayloadTooLarge_SingleDocument(t *testing.T) {
+func TestBulkIndexerBatchSplitOn413SingleDocument(t *testing.T) {
 	// This test verifies that when a single document causes a 413 error,
 	// we don't attempt to split (since there's nothing to split) and instead
 	// return the original 413 error to the caller.
@@ -1321,7 +1323,8 @@ func TestBulkIndexer_413PayloadTooLarge_SingleDocument(t *testing.T) {
 	})
 
 	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client: client,
+		Client:                client,
+		EnableBatchSplitOn413: true,
 	})
 	require.NoError(t, err)
 
@@ -1343,7 +1346,7 @@ func TestBulkIndexer_413PayloadTooLarge_SingleDocument(t *testing.T) {
 	assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
 }
 
-func TestBulkIndexer_413PayloadTooLarge_RecursiveSplitting(t *testing.T) {
+func TestBulkIndexerBatchSplitOn413RecursiveSplitting(t *testing.T) {
 	// This test verifies that recursive splitting works when even split batches are too large
 	var requestCount int64
 
@@ -1371,7 +1374,8 @@ func TestBulkIndexer_413PayloadTooLarge_RecursiveSplitting(t *testing.T) {
 	})
 
 	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client: client,
+		Client:                client,
+		EnableBatchSplitOn413: true,
 	})
 	require.NoError(t, err)
 

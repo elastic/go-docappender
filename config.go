@@ -158,6 +158,14 @@ type Config struct {
 	// MetricAttributes holds any extra attributes to set in the recorded
 	// metrics.
 	MetricAttributes attribute.Set
+
+	// EnableBatchSplitOn413, if set to true, causes a batch that receives a
+	// 413 Request Entity Too Large response to be split into smaller
+	// batches and retried.
+	// When false or not set, the default behavior is to fail the request.
+	//
+	// EnableBatchSplitOn413 is disabled by default.
+	EnableBatchSplitOn413 bool
 }
 
 // DefaultConfig returns a copy of cfg with any zero values set to their
@@ -326,6 +334,11 @@ type BulkIndexerConfig struct {
 
 	// Dictionary of key-value pairs to pass with the bulk request
 	QueryParams map[string][]string
+
+	// EnableBatchSplitOn413 controls whether a batch that received a
+	// 413 Request Entity Too Large response will be split into smaller
+	// batches and retried.
+	EnableBatchSplitOn413 bool
 }
 
 // Validate checks the configuration for errors.
@@ -354,5 +367,6 @@ func BulkIndexerConfigFrom(cl elastictransport.Interface, cfg Config) BulkIndexe
 		RequireDataStream:       cfg.RequireDataStream,
 		IncludeSourceOnError:    cfg.IncludeSourceOnError,
 		PopulateFailedDocsInput: cfg.PopulateFailedDocsInput,
+		EnableBatchSplitOn413:   cfg.EnableBatchSplitOn413,
 	}
 }

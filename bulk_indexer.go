@@ -595,7 +595,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	defer res.Body.Close()
 
 	// Check for 413 error so we can split the batch
-	if res.StatusCode == 413 && b.itemsAdded > 1 {
+	if b.config.EnableBatchSplitOn413 && res.StatusCode == 413 && b.itemsAdded > 1 {
 		return b.handlePayloadTooLarge(ctx)
 	}
 
