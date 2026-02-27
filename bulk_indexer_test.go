@@ -1120,44 +1120,122 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 }
 
 func TestBulkIndexerBatchSplitOn413(t *testing.T) {
-	tests := []struct {
-		name             string
-		compressionLevel int
-	}{
-		{"uncompressed", gzip.NoCompression},
-		{"compressed", gzip.DefaultCompression},
-	}
+	t.Run("basic_split_with_compression_levels", func(t *testing.T) {
+		compressionTests := []struct {
+			name             string
+			compressionLevel int
+		}{
+			{"uncompressed", gzip.NoCompression},
+			{"compressed", gzip.DefaultCompression},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var (
-				requestCount int64
-				firstRequest = true
-			)
+		for _, tt := range compressionTests {
+			t.Run(tt.name, func(t *testing.T) {
+				var (
+					requestCount int64
+					firstRequest = true
+				)
 
-			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-				atomic.AddInt64(&requestCount, 1)
-				currentReqCount := atomic.LoadInt64(&requestCount)
+				client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+					atomic.AddInt64(&requestCount, 1)
+					currentReqCount := atomic.LoadInt64(&requestCount)
 
-				docs, result, stats := docappendertest.DecodeBulkRequestWithStats(r)
+					docs, result, stats := docappendertest.DecodeBulkRequestWithStats(r)
 
-				if firstRequest {
-					// First request returns 413 (payload too large)
-					firstRequest = false
-					assert.Equal(t, 10, len(docs), "Initial request should have all 10 documents")
-					w.WriteHeader(http.StatusRequestEntityTooLarge)
-					fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
-					return
+					if firstRequest {
+						// First request returns 413 (payload too large)
+						firstRequest = false
+						assert.Equal(t, 10, len(docs), "Initial request should have all 10 documents")
+						w.WriteHeader(http.StatusRequestEntityTooLarge)
+						fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
+						return
+					}
+
+					// Subsequent requests (after splitting) should succeed
+					// We should get exactly 2 more requests (first half and second half)
+					assert.LessOrEqual(t, currentReqCount, int64(3), "Should not exceed 3 requests total")
+
+					// Each split request should have exactly 5 documents (10/2)
+					assert.Equal(t, 5, len(docs), "Each split batch should have exactly 5 docs")
+
+					// Return successful response
+					for i, itemsMap := range result.Items {
+						for k, item := range itemsMap {
+							item.Status = http.StatusCreated
+							item.Result = "created"
+							item.Version = int64(i + 1)
+							itemsMap[k] = item
+						}
+					}
+					json.NewEncoder(w).Encode(result)
+
+					// Validate request stats
+					assert.Equal(t, int64(len(docs)), stats.EventCount)
+					assert.Greater(t, stats.UncompressedBytes, int64(0))
+				})
+
+				indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+					Client:                client,
+					CompressionLevel:      tt.compressionLevel,
+					EnableBatchSplitOn413: true,
+				})
+				require.NoError(t, err)
+
+				// Add 10 documents to create a batch that will trigger 413
+				for i := 0; i < 10; i++ {
+					require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+						Index:  "test-index",
+						Action: "create",
+						Body: newJSONReader(map[string]any{
+							"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
+							"message":    fmt.Sprintf("Test document %d", i),
+							"id":         i,
+						}),
+					}))
 				}
 
-				// Subsequent requests (after splitting) should succeed
-				// We should get exactly 2 more requests (first half and second half)
-				assert.LessOrEqual(t, currentReqCount, int64(3), "Should not exceed 3 requests total")
+				// Verify we have 10 items before flush
+				assert.Equal(t, 10, indexer.Items())
 
-				// Each split request should have exactly 5 documents (10/2)
-				assert.Equal(t, 5, len(docs), "Each split batch should have exactly 5 docs")
+				// Flush should handle 413 by splitting and succeed
+				stat, err := indexer.Flush(context.Background())
+				require.NoError(t, err)
 
-				// Return successful response
+				// Verify all documents were eventually indexed
+				assert.Equal(t, int64(10), stat.Indexed)
+				assert.Equal(t, int64(0), stat.RetriedDocs)
+				assert.Empty(t, stat.FailedDocs)
+
+				// Verify we made exactly 3 requests (1 failed + 2 successful splits)
+				assert.Equal(t, int64(3), atomic.LoadInt64(&requestCount))
+
+				// Buffer should be empty after successful flush
+				assert.Equal(t, 0, indexer.Items())
+				assert.Equal(t, 0, indexer.Len())
+			})
+		}
+	})
+
+	t.Run("with_failures_during_split", func(t *testing.T) {
+		var requestCount int64
+
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt64(&requestCount, 1)
+			currentReqCount := atomic.LoadInt64(&requestCount)
+
+			docs, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+
+			if currentReqCount == 1 {
+				// First request returns 413
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
+				return
+			}
+
+			// Second request (first half) succeeds
+			if currentReqCount == 2 {
+				// Should have exactly 4 documents (first half of 8)
+				assert.Equal(t, 4, len(docs), "First half should have 4 documents")
 				for i, itemsMap := range result.Items {
 					for k, item := range itemsMap {
 						item.Status = http.StatusCreated
@@ -1166,75 +1244,125 @@ func TestBulkIndexerBatchSplitOn413(t *testing.T) {
 						itemsMap[k] = item
 					}
 				}
-				json.NewEncoder(w).Encode(result)
-
-				// Validate request stats
-				assert.Equal(t, int64(len(docs)), stats.EventCount)
-				assert.Greater(t, stats.UncompressedBytes, int64(0))
-			})
-
-			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-				Client:                client,
-				CompressionLevel:      tt.compressionLevel,
-				EnableBatchSplitOn413: true,
-			})
-			require.NoError(t, err)
-
-			// Add 10 documents to create a batch that will trigger 413
-			for i := 0; i < 10; i++ {
-				require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-					Index:  "test-index",
-					Action: "create",
-					Body: newJSONReader(map[string]any{
-						"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
-						"message":    fmt.Sprintf("Test document %d", i),
-						"id":         i,
-					}),
-				}))
+			} else {
+				// Third request (second half) has some failures
+				// Should have exactly 4 documents (second half of 8)
+				assert.Equal(t, 4, len(docs), "Second half should have 4 documents")
+				for i, itemsMap := range result.Items {
+					for k, item := range itemsMap {
+						if i%2 == 0 {
+							// Every other document fails
+							item.Status = http.StatusBadRequest
+							item.Error.Type = "test_error"
+							item.Error.Reason = "simulated failure"
+							result.HasErrors = true
+						} else {
+							item.Status = http.StatusCreated
+							item.Result = "created"
+							item.Version = int64(i + 1)
+						}
+						itemsMap[k] = item
+					}
+				}
 			}
 
-			// Verify we have 10 items before flush
-			assert.Equal(t, 10, indexer.Items())
-
-			// Flush should handle 413 by splitting and succeed
-			stat, err := indexer.Flush(context.Background())
-			require.NoError(t, err)
-
-			// Verify all documents were eventually indexed
-			assert.Equal(t, int64(10), stat.Indexed)
-			assert.Equal(t, int64(0), stat.RetriedDocs)
-			assert.Empty(t, stat.FailedDocs)
-
-			// Verify we made exactly 3 requests (1 failed + 2 successful splits)
-			assert.Equal(t, int64(3), atomic.LoadInt64(&requestCount))
-
-			// Buffer should be empty after successful flush
-			assert.Equal(t, 0, indexer.Items())
-			assert.Equal(t, 0, indexer.Len())
+			json.NewEncoder(w).Encode(result)
 		})
-	}
-}
 
-func TestBulkIndexerBatchSplitOn413WithFailures(t *testing.T) {
-	var requestCount int64
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:                client,
+			EnableBatchSplitOn413: true,
+		})
+		require.NoError(t, err)
 
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestCount, 1)
-		currentReqCount := atomic.LoadInt64(&requestCount)
-
-		docs, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
-
-		if currentReqCount == 1 {
-			// First request returns 413
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
-			return
+		// Add 8 documents
+		for i := 0; i < 8; i++ {
+			require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+				Index: "test-index",
+				Body: newJSONReader(map[string]any{
+					"message": fmt.Sprintf("Test document %d", i),
+					"id":      i,
+				}),
+			}))
 		}
 
-		// Second request (first half) succeeds
-		if currentReqCount == 2 {
-			// Should have exactly 4 documents (first half of 8)
-			assert.Equal(t, 4, len(docs), "First half should have 4 documents")
+		stat, err := indexer.Flush(context.Background())
+		require.NoError(t, err)
+
+		// Should have 6 successful documents (4 from first half + 2 from second half that succeed)
+		// and 2 failed documents (2 from second half that fail due to i%2 == 0)
+		assert.Equal(t, int64(6), stat.Indexed, "Should have exactly 6 indexed documents")
+		assert.Equal(t, len(stat.FailedDocs), 2, "Should have exactly 2 failed documents")
+
+		// Check that failed document positions are adjusted correctly for second half
+		// Failed docs should be at positions 4 and 6 (original positions in the full 8-doc batch)
+		expectedFailedPositions := []int{4, 6} // Even positions in second half: 0->4, 2->6
+		actualFailedPositions := make([]int, len(stat.FailedDocs))
+		for i, failedDoc := range stat.FailedDocs {
+			actualFailedPositions[i] = failedDoc.Position
+			assert.GreaterOrEqual(t, failedDoc.Position, 0)
+			assert.Less(t, failedDoc.Position, 8) // Should be within original batch size
+			assert.Equal(t, "test_error", failedDoc.Error.Type)
+		}
+		assert.ElementsMatch(t, expectedFailedPositions, actualFailedPositions, "Failed document positions should be correctly adjusted")
+
+		// Should have made 3 requests total
+		assert.Equal(t, int64(3), atomic.LoadInt64(&requestCount))
+	})
+
+	t.Run("single_document_cannot_split", func(t *testing.T) {
+		// This test verifies that when a single document causes a 413 error,
+		// we don't attempt to split (since there's nothing to split) and instead
+		// return the original 413 error to the caller.
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			docs, _, _ := docappendertest.DecodeBulkRequestWithStats(r)
+			assert.Equal(t, 1, len(docs), "Should always have exactly 1 document")
+
+			// Always return 413 - this should not trigger splitting for single document
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
+		})
+
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:                client,
+			EnableBatchSplitOn413: true,
+		})
+		require.NoError(t, err)
+
+		// Add only 1 document
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+			Index: "test-index",
+			Body: newJSONReader(map[string]any{
+				"message": "Single large document",
+			}),
+		}))
+
+		// Should return error without splitting since there's only 1 document
+		_, err = indexer.Flush(context.Background())
+		require.Error(t, err)
+
+		// Should be ErrorFlushFailed with payloadTooLarge = true
+		var flushErr docappender.ErrorFlushFailed
+		require.ErrorAs(t, err, &flushErr)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
+	})
+
+	t.Run("recursive_splitting", func(t *testing.T) {
+		// This test verifies that recursive splitting works when even split batches are too large
+		var requestCount int64
+
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt64(&requestCount, 1)
+			docs, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
+
+			// Return 413 for batches with more than 2 documents
+			if len(docs) > 2 {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
+				return
+			}
+
+			// Success for batches with 1-2 documents
 			for i, itemsMap := range result.Items {
 				for k, item := range itemsMap {
 					item.Status = http.StatusCreated
@@ -1243,171 +1371,91 @@ func TestBulkIndexerBatchSplitOn413WithFailures(t *testing.T) {
 					itemsMap[k] = item
 				}
 			}
-		} else {
-			// Third request (second half) has some failures
-			// Should have exactly 4 documents (second half of 8)
-			assert.Equal(t, 4, len(docs), "Second half should have 4 documents")
-			for i, itemsMap := range result.Items {
-				for k, item := range itemsMap {
-					if i%2 == 0 {
-						// Every other document fails
-						item.Status = http.StatusBadRequest
-						item.Error.Type = "test_error"
-						item.Error.Reason = "simulated failure"
-						result.HasErrors = true
-					} else {
-						item.Status = http.StatusCreated
-						item.Result = "created"
-						item.Version = int64(i + 1)
-					}
-					itemsMap[k] = item
-				}
-			}
+			json.NewEncoder(w).Encode(result)
+		})
+
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:                client,
+			EnableBatchSplitOn413: true,
+		})
+		require.NoError(t, err)
+
+		// Add 8 documents
+		for i := 0; i < 8; i++ {
+			require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+				Index: "test-index",
+				Body: newJSONReader(map[string]any{
+					"message": fmt.Sprintf("Test document %d", i),
+					"id":      i,
+				}),
+			}))
 		}
 
-		json.NewEncoder(w).Encode(result)
+		// Flush should recursively split until all batches are ≤ 2 documents
+		stat, err := indexer.Flush(context.Background())
+		require.NoError(t, err)
+
+		// All 8 documents should eventually be indexed
+		assert.Equal(t, int64(8), stat.Indexed)
+		assert.Empty(t, stat.FailedDocs)
+
+		// Should make multiple requests due to recursive splitting:
+		// 1st: 8 docs -> 413
+		// 2nd: 4 docs (first half) -> 413
+		// 3rd: 4 docs (second half) -> 413
+		// 4th: 2 docs (first quarter) -> success
+		// 5th: 2 docs (second quarter) -> success
+		// 6th: 2 docs (third quarter) -> success
+		// 7th: 2 docs (fourth quarter) -> success
+		// Total: 7 requests
+		assert.Equal(t, int64(7), atomic.LoadInt64(&requestCount))
 	})
 
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client:                client,
-		EnableBatchSplitOn413: true,
-	})
-	require.NoError(t, err)
+	t.Run("splitting_disabled_returns_error", func(t *testing.T) {
+		// This test verifies that when EnableBatchSplitOn413 is false,
+		// a 413 error is returned without attempting to split
+		var requestCount int64
 
-	// Add 8 documents
-	for i := 0; i < 8; i++ {
-		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-			Index: "test-index",
-			Body: newJSONReader(map[string]any{
-				"message": fmt.Sprintf("Test document %d", i),
-				"id":      i,
-			}),
-		}))
-	}
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt64(&requestCount, 1)
 
-	stat, err := indexer.Flush(context.Background())
-	require.NoError(t, err)
-
-	// Should have 6 successful documents (4 from first half + 2 from second half that succeed)
-	// and 2 failed documents (2 from second half that fail due to i%2 == 0)
-	assert.Equal(t, int64(6), stat.Indexed, "Should have exactly 6 indexed documents")
-	assert.Equal(t, len(stat.FailedDocs), 2, "Should have exactly 2 failed documents")
-
-	// Check that failed document positions are adjusted correctly for second half
-	// Failed docs should be at positions 4 and 6 (original positions in the full 8-doc batch)
-	expectedFailedPositions := []int{4, 6} // Even positions in second half: 0->4, 2->6
-	actualFailedPositions := make([]int, len(stat.FailedDocs))
-	for i, failedDoc := range stat.FailedDocs {
-		actualFailedPositions[i] = failedDoc.Position
-		assert.GreaterOrEqual(t, failedDoc.Position, 0)
-		assert.Less(t, failedDoc.Position, 8) // Should be within original batch size
-		assert.Equal(t, "test_error", failedDoc.Error.Type)
-	}
-	assert.ElementsMatch(t, expectedFailedPositions, actualFailedPositions, "Failed document positions should be correctly adjusted")
-
-	// Should have made 3 requests total
-	assert.Equal(t, int64(3), atomic.LoadInt64(&requestCount))
-}
-
-func TestBulkIndexerBatchSplitOn413SingleDocument(t *testing.T) {
-	// This test verifies that when a single document causes a 413 error,
-	// we don't attempt to split (since there's nothing to split) and instead
-	// return the original 413 error to the caller.
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		docs, _, _ := docappendertest.DecodeBulkRequestWithStats(r)
-		assert.Equal(t, 1, len(docs), "Should always have exactly 1 document")
-
-		// Always return 413 - this should not trigger splitting for single document
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
-	})
-
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client:                client,
-		EnableBatchSplitOn413: true,
-	})
-	require.NoError(t, err)
-
-	// Add only 1 document
-	require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-		Index: "test-index",
-		Body: newJSONReader(map[string]any{
-			"message": "Single large document",
-		}),
-	}))
-
-	// Should return error without splitting since there's only 1 document
-	_, err = indexer.Flush(context.Background())
-	require.Error(t, err)
-
-	// Should be ErrorFlushFailed with payloadTooLarge = true
-	var flushErr docappender.ErrorFlushFailed
-	require.ErrorAs(t, err, &flushErr)
-	assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
-}
-
-func TestBulkIndexerBatchSplitOn413RecursiveSplitting(t *testing.T) {
-	// This test verifies that recursive splitting works when even split batches are too large
-	var requestCount int64
-
-	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestCount, 1)
-		docs, result, _ := docappendertest.DecodeBulkRequestWithStats(r)
-
-		// Return 413 for batches with more than 2 documents
-		if len(docs) > 2 {
+			// Always return 413
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			fmt.Fprintln(w, `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`)
-			return
+		})
+
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:                client,
+			EnableBatchSplitOn413: false,
+		})
+		require.NoError(t, err)
+
+		// Add 10 documents
+		for i := 0; i < 10; i++ {
+			require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+				Index: "test-index",
+				Body: newJSONReader(map[string]any{
+					"message": fmt.Sprintf("Test document %d", i),
+					"id":      i,
+				}),
+			}))
 		}
 
-		// Success for batches with 1-2 documents
-		for i, itemsMap := range result.Items {
-			for k, item := range itemsMap {
-				item.Status = http.StatusCreated
-				item.Result = "created"
-				item.Version = int64(i + 1)
-				itemsMap[k] = item
-			}
-		}
-		json.NewEncoder(w).Encode(result)
+		// Flush should return error without splitting
+		_, err = indexer.Flush(context.Background())
+		require.Error(t, err)
+
+		// Should be ErrorFlushFailed with 413 status
+		var flushErr docappender.ErrorFlushFailed
+		require.ErrorAs(t, err, &flushErr)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
+
+		// Should have made exactly 1 request (no retry/split attempts)
+		assert.Equal(t, int64(1), atomic.LoadInt64(&requestCount))
+
+		// Documents should be discarded after failed flush
+		assert.Equal(t, 0, indexer.Items())
 	})
-
-	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-		Client:                client,
-		EnableBatchSplitOn413: true,
-	})
-	require.NoError(t, err)
-
-	// Add 8 documents
-	for i := 0; i < 8; i++ {
-		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
-			Index: "test-index",
-			Body: newJSONReader(map[string]any{
-				"message": fmt.Sprintf("Test document %d", i),
-				"id":      i,
-			}),
-		}))
-	}
-
-	// Flush should recursively split until all batches are ≤ 2 documents
-	stat, err := indexer.Flush(context.Background())
-	require.NoError(t, err)
-
-	// All 8 documents should eventually be indexed
-	assert.Equal(t, int64(8), stat.Indexed)
-	assert.Empty(t, stat.FailedDocs)
-
-	// Should make multiple requests due to recursive splitting:
-	// 1st: 8 docs -> 413
-	// 2nd: 4 docs (first half) -> 413
-	// 3rd: 4 docs (second half) -> 413
-	// 4th: 2 docs (first quarter) -> success
-	// 5th: 2 docs (second quarter) -> success
-	// 6th: 2 docs (third quarter) -> success
-	// 7th: 2 docs (fourth quarter) -> success
-	// Total: 7 requests
-	assert.Equal(t, int64(7), atomic.LoadInt64(&requestCount))
 }
 
 func BenchmarkAppendBinary(b *testing.B) {
