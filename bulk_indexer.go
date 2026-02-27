@@ -18,9 +18,12 @@
 package docappender
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -254,6 +257,21 @@ func (b *BulkIndexer) resetBuf() {
 	}
 }
 
+// Size returns the size of the buffer used by bulk indexer as per
+// the specified sizer type.
+
+// EXPERIMENTAL: This is an experimental API and can be removed or
+// modified with breaking changes.
+func (b *BulkIndexer) Size(sizerType SizerType) int {
+	switch sizerType {
+	case ItemsCountSizer:
+		return b.Items()
+	case BytesSizer:
+		return b.Len()
+	}
+	return b.Items()
+}
+
 // Items returns the number of buffered items.
 func (b *BulkIndexer) Items() int {
 	return b.itemsAdded
@@ -381,6 +399,125 @@ func (b *BulkIndexer) writeMeta(
 	b.jsonw.Reset()
 }
 
+// Merge merges another bulk indexer to the current one.
+// The merged bulk indexer should not be used after the method returns.
+//
+// EXPERIMENTAL: This is an experimental API and can be removed or
+// modified with breaking changes.
+func (b *BulkIndexer) Merge(other *BulkIndexer) error {
+	if b.config.CompressionLevel != other.config.CompressionLevel {
+		return errors.New("failed to merge bulk indexers, only same compression level merge is supported")
+	}
+	if other == nil {
+		return nil
+	}
+
+	switch b.config.CompressionLevel {
+	case gzip.NoCompression:
+		if _, err := other.buf.WriteTo(b.writer); err != nil {
+			return fmt.Errorf("failed to merge uncompressed bulk indexers: %w", err)
+		}
+	default:
+		// All compression levels
+		if other.gzipw != nil {
+			if err := other.gzipw.Close(); err != nil {
+				return fmt.Errorf("failed to merge compressed bulk indexers: %w", err)
+			}
+		}
+		othergzip, err := gzip.NewReader(bytes.NewReader(other.buf.Bytes()))
+		if err != nil {
+			return fmt.Errorf("failed to merge compressed bulk indexers: %w", err)
+		}
+		defer othergzip.Close()
+		if _, err := othergzip.WriteTo(b.writer); err != nil {
+			return fmt.Errorf("failed to merge compressed bulk indexers: %w", err)
+		}
+	}
+	b.itemsAdded += other.itemsAdded
+	return nil
+}
+
+// Split splits the data in the current bulk indexer into multiple
+// bulk indexers based on the max size and the sizer type specified.
+// Do not use the original bulk indexer after the method returns.
+//
+// EXPERIMENTAL: This is an experimental API and can be removed or
+// modified with breaking changes.
+func (b *BulkIndexer) Split(maxSize int, sizerType SizerType) ([]*BulkIndexer, error) {
+	size := b.Size(sizerType)
+	if size == 0 || size <= maxSize {
+		return []*BulkIndexer{b}, nil
+	}
+
+	// Split of `b` is needed. If `gzip` writer is used then close it before splitting.
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return nil, fmt.Errorf("failed to split bulk request, failed to close gzip writer: %w", err)
+		}
+	}
+
+	var (
+		result []*BulkIndexer
+		currBi *BulkIndexer
+	)
+
+	// The below logic calculates the size of the new data being added without
+	// considering compression. Considering the max size would generally be >>>
+	// single data size, the difference should be acceptable for practical cases.
+	var reader *bufio.Reader
+	if b.config.CompressionLevel != gzip.NoCompression {
+		gzipReader, err := gzip.NewReader(&b.buf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to split bulk requests, failed to read compressed data: %w", err)
+		}
+		defer gzipReader.Close()
+		reader = bufio.NewReader(gzipReader)
+	} else {
+		reader = bufio.NewReader(&b.buf)
+	}
+	var tmpBuffer bytes.Buffer
+	for {
+		meta, err := reader.ReadSlice('\n')
+		if err != nil {
+			if err == io.EOF {
+				// EOF reached, metadata should not cause EOF so we can safely discard any read data here
+				break
+			}
+			return nil, fmt.Errorf("failed to split bulk requests, failed to read metadata: %w, %v", err, meta)
+		}
+		if _, err := tmpBuffer.Write(meta); err != nil {
+			return nil, fmt.Errorf("failed to split bulk requests, failed to write metadata: %w", err)
+		}
+
+		data, err := reader.ReadSlice('\n')
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("failed to split bulk requests, failed to read item: %w", err)
+		}
+		if _, err := tmpBuffer.Write(data); err != nil {
+			return nil, fmt.Errorf("failed to split bulk requests, failed to write item: %w", err)
+		}
+
+		newDataSize := getSizeForByteBuffer(tmpBuffer, sizerType)
+		if newDataSize > maxSize {
+			return nil, errors.New("failed to split bulk request buffer, smallest bulk is greater than configured max size")
+		}
+
+		// compression is not considered for calculating the size of the data
+		// to be added to the new bulk indexer
+		if currBi == nil || currBi.Size(sizerType)+newDataSize > maxSize {
+			currBi = newBulkIndexer(b.config)
+			result = append(result, currBi)
+		}
+
+		if _, err := io.Copy(currBi.writer, &tmpBuffer); err != nil {
+			return nil, fmt.Errorf("failed to split bulk requests: %w", err)
+		}
+		currBi.itemsAdded++
+		tmpBuffer.Reset()
+	}
+	return result, nil
+}
+
 func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, error) {
 	// We should not pass the original b.buf bytes.Buffer down to the client/http layer because
 	// the indexer will reuse the buffer. The underlying http client/transport implementation may keep
@@ -457,6 +594,11 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 	defer res.Body.Close()
 
+	// Check for 413 error so we can split the batch
+	if b.config.EnableBatchSplitOn413 && res.StatusCode == 413 && b.itemsAdded > 1 {
+		return b.handlePayloadTooLarge(ctx)
+	}
+
 	// original bulk request body
 	bodyBuf := b.buf.Bytes()
 
@@ -499,11 +641,14 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		}
 		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
 		switch {
+		case res.StatusCode == 413:
+			e.payloadTooLarge = true
+			e.clientError = true
 		case res.StatusCode == 429:
 			e.tooMany = true
 		case res.StatusCode >= 500:
 			e.serverError = true
-		case res.StatusCode >= 400 && res.StatusCode != 429:
+		case res.StatusCode >= 400 && res.StatusCode != 429 && res.StatusCode != 413:
 			e.clientError = true
 		}
 		return resp, e
@@ -699,6 +844,122 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	return resp, nil
 }
 
+// handlePayloadTooLarge handles 413 (Request Entity Too Large) errors by splitting
+// the batch in half and recursively retrying each half.
+func (b *BulkIndexer) handlePayloadTooLarge(ctx context.Context) (BulkIndexerResponseStat, error) {
+	// Close gzip writer if needed before splitting
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return BulkIndexerResponseStat{}, fmt.Errorf("failed to close gzip writer before splitting: %w", err)
+		}
+	}
+
+	// Split in half based on item count
+	maxSize := b.itemsAdded / 2
+	if maxSize == 0 {
+		maxSize = 1
+	}
+
+	splits, err := b.Split(maxSize, ItemsCountSizer)
+	if err != nil {
+		return BulkIndexerResponseStat{}, fmt.Errorf("failed to split bulk request: %w", err)
+	}
+
+	// If we only got one split back, it means we can't split further
+	if len(splits) == 1 {
+		// Reset and return the original error
+		b.resetBuf()
+		return BulkIndexerResponseStat{}, ErrorFlushFailed{
+			statusCode:      413,
+			payloadTooLarge: true,
+			clientError:     true,
+			resp:            `{"error":{"type":"request_entity_too_large","reason":"Request entity too large"}}`,
+		}
+	}
+
+	// Reset the original indexer since Split() invalidates it
+	b.resetBuf()
+
+	// Flush each split and accumulate results
+	var combinedStat BulkIndexerResponseStat
+	currentOffset := 0
+
+	for _, split := range splits {
+		splitItemCount := split.itemsAdded
+
+		stat, err := split.Flush(ctx)
+		if err != nil {
+			return combinedStat, err
+		}
+
+		// Accumulate basic stats
+		combinedStat.Indexed += stat.Indexed
+		combinedStat.RetriedDocs += stat.RetriedDocs
+		combinedStat.FailureStoreDocs.Used += stat.FailureStoreDocs.Used
+		combinedStat.FailureStoreDocs.Failed += stat.FailureStoreDocs.Failed
+		combinedStat.FailureStoreDocs.NotEnabled += stat.FailureStoreDocs.NotEnabled
+		if stat.GreatestRetry > combinedStat.GreatestRetry {
+			combinedStat.GreatestRetry = stat.GreatestRetry
+		}
+
+		// Adjust positions for failed docs based on their position in the original batch
+		for _, failedDoc := range stat.FailedDocs {
+			adjustedDoc := failedDoc
+			adjustedDoc.Position += currentOffset
+			combinedStat.FailedDocs = append(combinedStat.FailedDocs, adjustedDoc)
+		}
+
+		// Update offset for next split
+		currentOffset += splitItemCount
+	}
+
+	return combinedStat, nil
+}
+
+func (b *BulkIndexer) AppendBinary(data []byte) ([]byte, error) {
+	if b.itemsAdded == 0 {
+		return data, nil
+	}
+
+	if b.gzipw != nil {
+		if err := b.gzipw.Close(); err != nil {
+			return nil, fmt.Errorf("failed closing the gzip writer: %w", err)
+		}
+	}
+
+	data = binary.AppendVarint(data, int64(b.itemsAdded))
+	data = binary.AppendVarint(data, int64(b.bytesFlushed))
+	data = binary.AppendVarint(data, int64(b.bytesUncompFlushed))
+	data = binary.AppendVarint(data, int64(b.buf.Len()))
+	data = append(data, b.buf.Bytes()...)
+	return data, nil
+}
+
+func (b *BulkIndexer) UnmarshalBinary(data []byte) (int, error) {
+	var read int
+
+	itemsAdded, n := binary.Varint(data)
+	b.itemsAdded = int(itemsAdded)
+	data = data[n:]
+	read += n
+
+	bytesFlushed, n := binary.Varint(data)
+	b.bytesFlushed = int(bytesFlushed)
+	data = data[n:]
+	read += n
+
+	bytesUncompFlushed, n := binary.Varint(data)
+	b.bytesUncompFlushed = int(bytesUncompFlushed)
+	data = data[n:]
+	read += n
+
+	bufLen, n := binary.Varint(data)
+	endIdx := n + int(bufLen)
+	b.buf = *bytes.NewBuffer(data[n:endIdx])
+
+	return read + endIdx, nil
+}
+
 func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
 	for _, status := range b.config.RetryOnDocumentStatus {
 		if docStatus == status {
@@ -725,11 +986,12 @@ func indexnth(s []byte, nth int, sep rune) int {
 }
 
 type ErrorFlushFailed struct {
-	resp        string
-	statusCode  int
-	tooMany     bool
-	clientError bool
-	serverError bool
+	resp            string
+	statusCode      int
+	tooMany         bool
+	clientError     bool
+	serverError     bool
+	payloadTooLarge bool
 }
 
 func (e ErrorFlushFailed) StatusCode() int {
@@ -742,4 +1004,19 @@ func (e ErrorFlushFailed) ResponseBody() string {
 
 func (e ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
+}
+
+type SizerType int
+
+const (
+	ItemsCountSizer SizerType = iota
+	BytesSizer
+)
+
+func getSizeForByteBuffer(b bytes.Buffer, sizerType SizerType) int {
+	if sizerType == ItemsCountSizer {
+		return 1
+	}
+	// Compression is not considered
+	return b.Len()
 }
