@@ -960,27 +960,20 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 }
 
 func TestSkipReturningIndex(t *testing.T) {
-	filterPathWithIndex := "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
-	filterPathWithoutIndex := "items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
-
+	defaultFilterPath := "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
 	for _, tc := range []struct {
 		name               string
-		skipReturningIndex bool
+		filterPath         string
 		expectedFilterPath string
 	}{
 		{
-			name:               "skip_returning_index",
-			skipReturningIndex: true,
-			expectedFilterPath: filterPathWithoutIndex,
+			name:               "default",
+			expectedFilterPath: defaultFilterPath,
 		},
 		{
-			name:               "explicit_false",
-			skipReturningIndex: false,
-			expectedFilterPath: filterPathWithIndex,
-		},
-		{
-			name:               "default_zero_value",
-			expectedFilterPath: filterPathWithIndex,
+			name:               "set in BulkIndexerConfig",
+			filterPath:         "items.*.error.reason",
+			expectedFilterPath: "items.*.error.reason",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -993,8 +986,8 @@ func TestSkipReturningIndex(t *testing.T) {
 			})
 
 			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
-				Client:             client,
-				SkipReturningIndex: tc.skipReturningIndex,
+				Client:     client,
+				FilterPath: tc.filterPath,
 			})
 			require.NoError(t, err)
 

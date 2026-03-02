@@ -327,12 +327,13 @@ type BulkIndexerConfig struct {
 	// Dictionary of key-value pairs to pass with the bulk request
 	QueryParams map[string][]string
 
-	// SkipReturningIndex, if set to True, the filter_path will
-	// not contain "items.*._index," which means that the "_index" field
-	// will not be returned for each item in the bulk event.  Dropping
-	// this field will significantly reduce the size of the response if
-	// the field is not required.  SkipReturningIndex is Unset by default
-	SkipReturningIndex bool
+	// FilterPath, if set will override the default filter path
+	// "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason".
+	// This can be used to control what data is returned in the
+	// response from Elasticsearch
+	//
+	// FilterPath is Unset by default
+	FilterPath string
 }
 
 // Validate checks the configuration for errors.

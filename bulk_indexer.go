@@ -59,8 +59,6 @@ const (
 	HeaderUncompressedLength = "X-Elastic-Uncompressed-Request-Length"
 )
 
-var baseFilterPath = "items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
-
 // BulkIndexer issues bulk requests to Elasticsearch. It is NOT safe for concurrent use
 // by multiple goroutines.
 type BulkIndexer struct {
@@ -417,10 +415,10 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	if !b.config.SkipReturningIndex {
-		v.Set("filter_path", "items.*._index,"+baseFilterPath)
+	if b.config.FilterPath == "" {
+		v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
 	} else {
-		v.Set("filter_path", baseFilterPath)
+		v.Set("filter_path", b.config.FilterPath)
 	}
 	if b.config.IncludeSourceOnError != Unset {
 		switch b.config.IncludeSourceOnError {
