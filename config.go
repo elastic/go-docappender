@@ -327,7 +327,7 @@ type BulkIndexerConfig struct {
 	// Dictionary of key-value pairs to pass with the bulk request
 	QueryParams map[string][]string
 
-	// FilterPath, if set will override the default filter path
+	// FilterPath, if set to a non-empty value will override the default filter path
 	// "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason".
 	// This can be used to control what data is returned in the
 	// response from Elasticsearch
