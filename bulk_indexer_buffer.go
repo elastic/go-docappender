@@ -26,6 +26,6 @@ import "io"
 type BulkIndexerBuffer interface {
 	// WriteTo writes all buffered ndjson bytes to w.
 	io.WriterTo
-	// Len returns the number of items stored in the buffer.
-	Len() int
+	// ItemCount returns the number of items stored in the buffer.
+	ItemCount() int
 }

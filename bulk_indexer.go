@@ -396,13 +396,13 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 // and when they are ready to be sent to Elasticsearch, AddBuffer loads them
 // into the indexer in a single write before calling Flush.
 func (b *BulkIndexer) AddBuffer(buf BulkIndexerBuffer) error {
-	if buf.Len() == 0 {
+	if buf.ItemCount() == 0 {
 		return nil
 	}
 	if _, err := buf.WriteTo(b.writer); err != nil {
 		return fmt.Errorf("failed to write bulk indexer buffer: %w", err)
 	}
-	b.itemsAdded += buf.Len()
+	b.itemsAdded += buf.ItemCount()
 	return nil
 }
 
