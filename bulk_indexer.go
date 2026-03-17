@@ -244,6 +244,14 @@ func (b *BulkIndexer) SetClient(client elastictransport.Interface) {
 	b.config.Client = client
 }
 
+// ResetBuf resets the internal ndjson buffer and item counter so that the
+// BulkIndexer can be reused without discarding the configuration.  Unlike
+// Flush, this does NOT send any buffered items to Elasticsearch.  It is
+// intended for use in benchmarks and tests.
+func (b *BulkIndexer) ResetBuf() {
+	b.resetBuf()
+}
+
 // resetBuf resets compressed buffer after flushing it to Elasticsearch
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
@@ -325,60 +333,16 @@ func (b *BulkIndexer) writeMeta(
 	dynamicTemplates map[string]string,
 	requireDataStream bool,
 ) {
-	b.jsonw.RawString(`{"`)
-	b.jsonw.RawString(action)
-	b.jsonw.RawString(`":{`)
-
-	first := true
-	if documentID != "" {
-		b.jsonw.RawString(`"_id":`)
-		b.jsonw.String(documentID)
-		first = false
-	}
-	if index != "" {
-		if !first {
-			b.jsonw.RawByte(',')
-		}
-		b.jsonw.RawString(`"_index":`)
-		b.jsonw.String(index)
-		first = false
-	}
-	if pipeline != "" {
-		if !first {
-			b.jsonw.RawByte(',')
-		}
-		b.jsonw.RawString(`"pipeline":`)
-		b.jsonw.String(pipeline)
-		first = false
-	}
-	if len(dynamicTemplates) > 0 {
-		if !first {
-			b.jsonw.RawByte(',')
-		}
-		b.jsonw.RawString(`"dynamic_templates":{`)
-		firstDynamicTemplate := true
-		for k, v := range dynamicTemplates {
-			if !firstDynamicTemplate {
-				b.jsonw.RawByte(',')
-			}
-			b.jsonw.String(k)
-			b.jsonw.RawByte(':')
-			b.jsonw.String(v)
-			firstDynamicTemplate = false
-		}
-		b.jsonw.RawByte('}')
-		first = false
-	}
-	if requireDataStream {
-		if !first {
-			b.jsonw.RawByte(',')
-		}
-		b.jsonw.RawString(`"require_data_stream":true`)
-		first = false
-	}
-	b.jsonw.RawString("}}\n")
-	b.writer.Write(b.jsonw.Bytes())
-	b.jsonw.Reset()
+	writeItemMetaTo(
+		&b.jsonw,
+		b.writer,
+		index,
+		documentID,
+		pipeline,
+		action,
+		dynamicTemplates,
+		requireDataStream,
+	)
 }
 
 func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, error) {
@@ -425,6 +389,21 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	req.URL.RawQuery = v.Encode()
 
 	return req, nil
+}
+
+// AddBuffer appends all items from buf into the BulkIndexer's internal ndjson
+// stream.  Items are accumulated in the buffer (zero intermediate allocation),
+// and when they are ready to be sent to Elasticsearch, AddBuffer loads them
+// into the indexer in a single write before calling Flush.
+func (b *BulkIndexer) AddBuffer(buf BulkIndexerBuffer) error {
+	if buf.ItemCount() == 0 {
+		return nil
+	}
+	if _, err := buf.WriteTo(b.writer); err != nil {
+		return fmt.Errorf("failed to write bulk indexer buffer: %w", err)
+	}
+	b.itemsAdded += buf.ItemCount()
+	return nil
 }
 
 // Flush executes a bulk request if there are any items buffered, and clears out the buffer.
@@ -742,4 +721,94 @@ func (e ErrorFlushFailed) ResponseBody() string {
 
 func (e ErrorFlushFailed) Error() string {
 	return fmt.Sprintf("flush failed (%d): %s", e.statusCode, e.resp)
+}
+
+// WriteItemMeta encodes the Elasticsearch bulk metadata line for item into w,
+// including the trailing newline. It returns the number of bytes written.
+//
+// This is the authoritative encoding of the Elasticsearch bulk API meta format.
+// External callers (e.g. an exporter that buffers items independently) should
+// use this function rather than duplicating the encoding logic.
+//
+// An empty item.Action defaults to ActionCreate. An unrecognised action returns
+// an error and nothing is written to w.
+func WriteItemMeta(w io.Writer, item BulkIndexerItem) (int, error) {
+	action := item.Action
+	if action == "" {
+		action = ActionCreate
+	}
+	switch action {
+	case ActionCreate, ActionDelete, ActionIndex, ActionUpdate:
+	default:
+		return 0, fmt.Errorf("%s is not a valid action", action)
+	}
+	var jsonw fastjson.Writer
+	return writeItemMetaTo(&jsonw, w, item.Index, item.DocumentID, item.Pipeline, action, item.DynamicTemplates, item.RequireDataStream)
+}
+
+// writeItemMetaTo is the shared encoding kernel used by both WriteItemMeta and
+// BulkIndexer.writeMeta. Callers supply their own *fastjson.Writer so that
+// hot-path callers (BulkIndexer) can reuse the writer across items without
+// allocating on every call.
+func writeItemMetaTo(
+	jsonw *fastjson.Writer,
+	w io.Writer,
+	index, documentID, pipeline, action string,
+	dynamicTemplates map[string]string,
+	requireDataStream bool,
+) (int, error) {
+	jsonw.RawString(`{"`)
+	jsonw.RawString(action)
+	jsonw.RawString(`":{`)
+
+	first := true
+	if documentID != "" {
+		jsonw.RawString(`"_id":`)
+		jsonw.String(documentID)
+		first = false
+	}
+	if index != "" {
+		if !first {
+			jsonw.RawByte(',')
+		}
+		jsonw.RawString(`"_index":`)
+		jsonw.String(index)
+		first = false
+	}
+	if pipeline != "" {
+		if !first {
+			jsonw.RawByte(',')
+		}
+		jsonw.RawString(`"pipeline":`)
+		jsonw.String(pipeline)
+		first = false
+	}
+	if len(dynamicTemplates) > 0 {
+		if !first {
+			jsonw.RawByte(',')
+		}
+		jsonw.RawString(`"dynamic_templates":{`)
+		firstDynamicTemplate := true
+		for k, v := range dynamicTemplates {
+			if !firstDynamicTemplate {
+				jsonw.RawByte(',')
+			}
+			jsonw.String(k)
+			jsonw.RawByte(':')
+			jsonw.String(v)
+			firstDynamicTemplate = false
+		}
+		jsonw.RawByte('}')
+		first = false
+	}
+	if requireDataStream {
+		if !first {
+			jsonw.RawByte(',')
+		}
+		jsonw.RawString(`"require_data_stream":true`)
+	}
+	jsonw.RawString("}}\n")
+	n, err := w.Write(jsonw.Bytes())
+	jsonw.Reset()
+	return n, err
 }
