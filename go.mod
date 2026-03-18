@@ -3,7 +3,7 @@ module github.com/elastic/go-docappender/v2
 go 1.24.0
 
 require (
-	github.com/elastic/elastic-transport-go/v8 v8.8.0
+	github.com/elastic/elastic-transport-go/v8 v8.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.18.4
 	github.com/stretchr/testify v1.11.1
