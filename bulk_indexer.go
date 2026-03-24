@@ -55,6 +55,9 @@ const (
 	ActionIndex  = "index"
 	ActionUpdate = "update"
 
+	// DefaultFilterPath is the default `filter_path` used when
+	// sending the Bulk request.
+	DefaultFilterPath        = "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason"
 	HeaderEventCount         = "X-Elastic-Event-Count"
 	HeaderUncompressedLength = "X-Elastic-Uncompressed-Request-Length"
 )
@@ -376,7 +379,11 @@ func (b *BulkIndexer) newBulkIndexRequest(ctx context.Context) (*http.Request, e
 	if b.config.RequireDataStream {
 		v.Set("require_data_stream", strconv.FormatBool(b.config.RequireDataStream))
 	}
-	v.Set("filter_path", "items.*._index,items.*.status,items.*.failure_store,items.*.error.type,items.*.error.reason")
+	if b.config.FilterPath == "" {
+		v.Set("filter_path", DefaultFilterPath)
+	} else {
+		v.Set("filter_path", b.config.FilterPath)
+	}
 	if b.config.IncludeSourceOnError != Unset {
 		switch b.config.IncludeSourceOnError {
 		case False:

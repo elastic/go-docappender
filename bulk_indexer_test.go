@@ -854,3 +854,46 @@ func TestPopulateFailedDocsInput(t *testing.T) {
 		})
 	}
 }
+
+func TestSettingFilterPath(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		filterPath         string
+		expectedFilterPath string
+	}{
+		{
+			name:               "default",
+			expectedFilterPath: docappender.DefaultFilterPath,
+		},
+		{
+			name:               "set in BulkIndexerConfig",
+			filterPath:         "items.*.error.reason",
+			expectedFilterPath: "items.*.error.reason",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				filterPath := r.URL.Query().Get("filter_path")
+				assert.Equal(t, tc.expectedFilterPath, filterPath)
+
+				_, result := docappendertest.DecodeBulkRequest(r)
+				json.NewEncoder(w).Encode(result)
+			})
+
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:     client,
+				FilterPath: tc.filterPath,
+			})
+			require.NoError(t, err)
+
+			err = indexer.Add(docappender.BulkIndexerItem{
+				Index: "testidx",
+				Body:  strings.NewReader(`{"message":"test"}`),
+			})
+			require.NoError(t, err)
+
+			_, err = indexer.Flush(context.Background())
+			require.NoError(t, err)
+		})
+	}
+}
