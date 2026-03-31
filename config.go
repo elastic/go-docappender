@@ -326,6 +326,17 @@ type BulkIndexerConfig struct {
 
 	// Dictionary of key-value pairs to pass with the bulk request
 	QueryParams map[string][]string
+
+	// FilterPath, if set will override the
+	// DefaultFilterPath. This can be used to control what data is
+	// returned in the response from Elasticsearch.
+	//
+	// Note: If `items.*._index.items` is not in the FilterPath
+	// than the FailedDocs in the BulkIndexerResponseStat will not
+	// have the Index field set.
+	//
+	// FilterPath is Unset by default
+	FilterPath string
 }
 
 // Validate checks the configuration for errors.
