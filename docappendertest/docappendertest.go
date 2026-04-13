@@ -33,7 +33,6 @@ import (
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.elastic.co/apm/module/apmelasticsearch/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -218,7 +217,6 @@ func NewMockElasticsearchClientConfig(t testing.TB, bulkHandler http.HandlerFunc
 	config := elastictransport.Config{}
 	config.URLs = []*url.URL{u}
 	config.DisableRetry = true
-	config.Transport = apmelasticsearch.WrapRoundTripper(http.DefaultTransport)
 
 	return config
 }
