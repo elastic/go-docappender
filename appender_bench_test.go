@@ -32,12 +32,38 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/fastjson"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/elastic/go-docappender/v2"
 	"github.com/elastic/go-docappender/v2/docappendertest"
 )
+
+var measurementOptionSink metric.MeasurementOption
+
+func BenchmarkMetricWithAttributeSet(b *testing.B) {
+	attrs := attribute.NewSet(
+		attribute.String("service.name", "docappender-bench"),
+		attribute.String("env", "bench"),
+		attribute.Int("workers", 16),
+	)
+
+	b.Run("ConstructEachCall", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			measurementOptionSink = metric.WithAttributeSet(attrs)
+		}
+	})
+	b.Run("ReuseCachedOption", func(b *testing.B) {
+		b.ReportAllocs()
+		cached := metric.WithAttributeSet(attrs)
+		for i := 0; i < b.N; i++ {
+			measurementOptionSink = cached
+		}
+	})
+}
 
 func BenchmarkAppender(b *testing.B) {
 	b.Run("NoCompression", func(b *testing.B) {
