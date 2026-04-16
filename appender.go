@@ -81,6 +81,8 @@ type Appender struct {
 	// tracer is an OTel tracer, and should not be confused with `a.config.Tracer`
 	// which is an Elastic APM Tracer.
 	tracer trace.Tracer
+
+	metricAttributeSet metric.MeasurementOption
 }
 
 // New returns a new Appender that indexes documents into Elasticsearch.
@@ -121,12 +123,12 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 		bulkItems: make(chan BulkIndexerItem, cfg.DocumentBufferSize),
 		metrics:   ms,
 	}
+	indexer.metricAttributeSet = metric.WithAttributeSet(indexer.config.MetricAttributes)
 	// Use the Appender's pointer as the unique ID for the BulkIndexerPool.
 	// Register the Appender ID in the pool.
 	indexer.id = fmt.Sprintf("%p", indexer)
 	indexer.pool.Register(indexer.id)
-	attrs := metric.WithAttributeSet(indexer.config.MetricAttributes)
-	indexer.metrics.availableBulkRequests.Add(context.Background(), int64(cfg.MaxRequests), attrs)
+	indexer.metrics.availableBulkRequests.Add(context.Background(), int64(cfg.MaxRequests), indexer.metricAttributeSet)
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
 	// because one flush failure should not cause the context to be cancelled.
@@ -169,7 +171,7 @@ func (a *Appender) Close(ctx context.Context) error {
 		<-ctx.Done()
 	}()
 
-	defer a.metrics.availableBulkRequests.Add(context.Background(), -int64(a.config.MaxRequests), metric.WithAttributeSet(a.config.MetricAttributes))
+	defer a.metrics.availableBulkRequests.Add(context.Background(), -int64(a.config.MaxRequests), a.metricAttributeSet)
 
 	if err := a.errgroup.Wait(); err != nil {
 		return err
@@ -210,8 +212,7 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 		Body:  document,
 	}
 	if len(a.bulkItems) == cap(a.bulkItems) {
-		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-		a.metrics.blockedAdd.Add(context.Background(), 1, attrs)
+		a.metrics.blockedAdd.Add(context.Background(), 1, a.metricAttributeSet)
 	}
 
 	select {
@@ -223,9 +224,8 @@ func (a *Appender) Add(ctx context.Context, index string, document io.WriterTo) 
 	}
 
 	a.docsAdded.Add(1)
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	a.metrics.docsAdded.Add(context.Background(), 1, attrs)
-	a.metrics.docsActive.Add(context.Background(), 1, attrs)
+	a.metrics.docsAdded.Add(context.Background(), 1, a.metricAttributeSet)
+	a.metrics.docsActive.Add(context.Background(), 1, a.metricAttributeSet)
 
 	return nil
 }
@@ -240,8 +240,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		return nil
 	}
 	defer func() {
-		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-		a.metrics.bulkRequests.Add(context.Background(), 1, attrs)
+		a.metrics.bulkRequests.Add(context.Background(), 1, a.metricAttributeSet)
 	}()
 
 	logger := a.config.Logger
@@ -275,18 +274,15 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	// Record the BulkIndexer buffer's length as the bytesTotal metric after
 	// the request has been flushed.
 	if flushed := bulkIndexer.BytesFlushed(); flushed > 0 {
-		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-		a.metrics.bytesTotal.Add(context.Background(), int64(flushed), attrs)
+		a.metrics.bytesTotal.Add(context.Background(), int64(flushed), a.metricAttributeSet)
 	}
 	// Record the BulkIndexer uncompressed bytes written to the buffer
 	// as the bytesUncompressedTotal metric after the request has been flushed.
 	if flushed := bulkIndexer.BytesUncompressedFlushed(); flushed > 0 {
-		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-		a.metrics.bytesUncompressedTotal.Add(context.Background(), int64(flushed), attrs)
+		a.metrics.bytesUncompressedTotal.Add(context.Background(), int64(flushed), a.metricAttributeSet)
 	}
 	if err != nil {
-		attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-		a.metrics.docsActive.Add(context.Background(), -int64(n), attrs)
+		a.metrics.docsActive.Add(context.Background(), -int64(n), a.metricAttributeSet)
 		logger.Error("bulk indexing request failed", zap.Error(err))
 		if a.otelTracingEnabled() && span.IsRecording() {
 			span.RecordError(err)
@@ -298,7 +294,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 				context.Background(),
 				int64(n),
 				metric.WithAttributes(attribute.String("status", "Timeout")),
-				metric.WithAttributeSet(a.config.MetricAttributes),
+				a.metricAttributeSet,
 			)
 		}
 
@@ -323,7 +319,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 						attribute.String("status", status),
 						semconv.HTTPResponseStatusCode(errFailed.statusCode),
 					),
-					metric.WithAttributeSet(a.config.MetricAttributes),
+					a.metricAttributeSet,
 				)
 			}
 		}
@@ -343,8 +339,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 	}
 	docsFailed = int64(len(resp.FailedDocs))
 	totalFlushed := docsFailed + docsIndexed
-	attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-	a.metrics.docsActive.Add(context.Background(), -totalFlushed, attrs)
+	a.metrics.docsActive.Add(context.Background(), -totalFlushed, a.metricAttributeSet)
 	for _, info := range resp.FailedDocs {
 		if info.Status >= 400 && info.Status < 500 {
 			if info.Status == http.StatusTooManyRequests {
@@ -374,7 +369,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.metrics.docsRetried.Add(
 			context.Background(),
 			resp.RetriedDocs,
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 			metric.WithAttributes(attribute.Int("greatest_retry", resp.GreatestRetry)),
 		)
 	}
@@ -382,7 +377,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 		a.metrics.docsIndexed.Add(
 			context.Background(),
 			docsIndexed,
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 			metric.WithAttributes(attribute.String("status", "Success")),
 		)
 	}
@@ -392,7 +387,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			context.Background(),
 			tooManyRequests,
 			metric.WithAttributes(attribute.String("status", "TooMany")),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	if clientFailed > 0 {
@@ -400,7 +395,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			context.Background(),
 			clientFailed,
 			metric.WithAttributes(attribute.String("status", "FailedClient")),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	if serverFailed > 0 {
@@ -408,7 +403,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 			context.Background(),
 			serverFailed,
 			metric.WithAttributes(attribute.String("status", "FailedServer")),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	if failureStoreDocs.Used > 0 {
@@ -419,7 +414,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusUsed)),
 			),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	if failureStoreDocs.Failed > 0 {
@@ -430,7 +425,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusFailed)),
 			),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	if failureStoreDocs.NotEnabled > 0 {
@@ -441,7 +436,7 @@ func (a *Appender) flush(ctx context.Context, bulkIndexer *BulkIndexer) error {
 				attribute.String("status", "FailureStore"),
 				attribute.String("failure_store", string(FailureStoreStatusNotEnabled)),
 			),
-			metric.WithAttributeSet(a.config.MetricAttributes),
+			a.metricAttributeSet,
 		)
 	}
 	logger.Debug(
@@ -492,9 +487,8 @@ func (a *Appender) runActiveIndexer() {
 			// to reset it to ensure we're using the right client.
 			active.SetClient(a.client)
 
-			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-			a.metrics.availableBulkRequests.Add(context.Background(), -1, attrs)
-			a.metrics.inflightBulkrequests.Add(context.Background(), 1, attrs)
+			a.metrics.availableBulkRequests.Add(context.Background(), -1, a.metricAttributeSet)
+			a.metrics.inflightBulkrequests.Add(context.Background(), 1, a.metricAttributeSet)
 			flushTimer.Reset(a.config.FlushInterval)
 		}
 		if err := active.Add(item); err != nil {
@@ -551,7 +545,6 @@ func (a *Appender) runActiveIndexer() {
 		if active != nil {
 			indexer := active
 			active = nil
-			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
 			a.errgroup.Go(func() error {
 				var err error
 				took := timeFunc(func() {
@@ -559,16 +552,15 @@ func (a *Appender) runActiveIndexer() {
 				})
 				indexer.Reset()
 				a.pool.Put(a.id, indexer)
-				attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-				a.metrics.availableBulkRequests.Add(context.Background(), 1, attrs)
-				a.metrics.inflightBulkrequests.Add(context.Background(), -1, attrs)
+				a.metrics.availableBulkRequests.Add(context.Background(), 1, a.metricAttributeSet)
+				a.metrics.inflightBulkrequests.Add(context.Background(), -1, a.metricAttributeSet)
 				a.metrics.flushDuration.Record(context.Background(), took.Seconds(),
-					attrs,
+					a.metricAttributeSet,
 				)
 				return err
 			})
 			a.metrics.bufferDuration.Record(context.Background(),
-				time.Since(firstDocTS).Seconds(), attrs,
+				time.Since(firstDocTS).Seconds(), a.metricAttributeSet,
 			)
 		}
 		if a.config.Scaling.Disabled {
@@ -577,13 +569,11 @@ func (a *Appender) runActiveIndexer() {
 		now := time.Now()
 		info := a.scalingInformation()
 		if a.maybeScaleDown(now, info, &timedFlush) {
-			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-			a.metrics.activeDestroyed.Add(context.Background(), 1, attrs)
+			a.metrics.activeDestroyed.Add(context.Background(), 1, a.metricAttributeSet)
 			return
 		}
 		if a.maybeScaleUp(now, info, &fullFlush) {
-			attrs := metric.WithAttributeSet(a.config.MetricAttributes)
-			a.metrics.activeCreated.Add(context.Background(), 1, attrs)
+			a.metrics.activeCreated.Add(context.Background(), 1, a.metricAttributeSet)
 			a.errgroup.Go(func() error {
 				a.runActiveIndexer()
 				return nil
