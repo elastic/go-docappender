@@ -129,6 +129,32 @@ func New(client elastictransport.Interface, cfg Config) (*Appender, error) {
 	indexer.id = fmt.Sprintf("%p", indexer)
 	indexer.pool.Register(indexer.id)
 	indexer.metrics.availableBulkRequests.Add(context.Background(), int64(cfg.MaxRequests), indexer.metricAttributeSet)
+	// Eagerly seed every counter and up/down counter that only carries the
+	// indexer's MetricAttributes with a zero data point, so the SDK exports
+	// the metric from process start. Cumulative counters are implicitly 0
+	// before any Add, so this is a no-op semantically while making the
+	// metric visible to consumers that infer schema from a snapshot
+	// (e.g. apm-server's /stats endpoint).
+	//
+	// docsIndexed (elasticsearch.events.processed) and docsRetried
+	// (elasticsearch.events.retried) carry additional per-call attributes
+	// (status, greatest_retry) and are intentionally not seeded here:
+	// emitting an attribute-less zero data point would violate the
+	// existing contract that every data point on those streams carries
+	// those attributes.
+	for _, c := range []interface{ Add(context.Context, int64, ...metric.AddOption) }{
+		indexer.metrics.bulkRequests,
+		indexer.metrics.docsAdded,
+		indexer.metrics.docsActive,
+		indexer.metrics.bytesTotal,
+		indexer.metrics.bytesUncompressedTotal,
+		indexer.metrics.inflightBulkrequests,
+		indexer.metrics.activeCreated,
+		indexer.metrics.activeDestroyed,
+		indexer.metrics.blockedAdd,
+	} {
+		c.Add(context.Background(), 0, indexer.metricAttributeSet)
+	}
 	// We create a cancellable context for the errgroup.Group for unblocking
 	// flushes when Close returns. We intentionally do not use errgroup.WithContext,
 	// because one flush failure should not cause the context to be cancelled.
