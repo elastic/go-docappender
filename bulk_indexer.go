@@ -80,23 +80,56 @@ type BulkIndexer struct {
 type BulkIndexerResponseStat struct {
 	// Indexed contains the total number of successfully indexed documents.
 	Indexed int64
+	// IndexStats contains document counts per destination index, as reported
+	// by the `_index` field of the response. It is only populated when
+	// BulkIndexerConfig.PopulateIndexStats is set.
+	IndexStats map[string]BulkIndexerIndexStat
 	// RetriedDocs contains the total number of retried documents.
 	RetriedDocs int64
 	// FailureStoreDocs contains failure store specific document stats.
-	FailureStoreDocs struct {
-		// Used contains the total number of documents indexed to failure store.
-		Used int64
-		// Failed contains the total number of documents which failed when indexed to failure store.
-		Failed int64
-		// NotEnabled contains the total number of documents which could have been indexed to failure store
-		// if it was enabled.
-		NotEnabled int64
-	}
+	FailureStoreDocs FailureStoreDocsStat
 	// GreatestRetry contains the greatest observed retry count in the entire
 	// bulk request.
 	GreatestRetry int
 	// FailedDocs contains the failed documents.
 	FailedDocs []BulkIndexerResponseItem
+}
+
+// FailureStoreDocsStat contains the number of documents per failure store status.
+type FailureStoreDocsStat struct {
+	// Used contains the total number of documents indexed to failure store.
+	Used int64
+	// Failed contains the total number of documents which failed when indexed to failure store.
+	Failed int64
+	// NotEnabled contains the total number of documents which could have been indexed to failure store
+	// if it was enabled.
+	NotEnabled int64
+}
+
+// add counts a document with the given failure store status. For the stats track
+// only actionable explicit failure store statuses "used", "failed" and "not_enabled".
+func (s *FailureStoreDocsStat) add(status FailureStoreStatus) {
+	switch status {
+	case FailureStoreStatusUsed:
+		s.Used++
+	case FailureStoreStatusFailed:
+		s.Failed++
+	case FailureStoreStatusNotEnabled:
+		s.NotEnabled++
+	}
+}
+
+// BulkIndexerIndexStat holds the document counts of a single destination index.
+type BulkIndexerIndexStat struct {
+	// Indexed contains the number of successfully indexed documents.
+	// It includes the documents indexed to the failure store.
+	Indexed int64
+	// Failed contains the number of documents that failed permanently,
+	// i.e. those in BulkIndexerResponseStat.FailedDocs. Documents that
+	// are pending a retry are not included.
+	Failed int64
+	// FailureStoreDocs contains failure store specific document stats.
+	FailureStoreDocs FailureStoreDocsStat
 }
 
 // BulkIndexerResponseItem represents the Elasticsearch response item.
@@ -139,6 +172,7 @@ func init() {
 				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
 					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
 						var item BulkIndexerResponseItem
+						var failureStore FailureStoreStatus
 						i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 							switch s {
 							case "_index":
@@ -146,15 +180,7 @@ func init() {
 							case "status":
 								item.Status = i.ReadInt()
 							case "failure_store":
-								// For the stats track only actionable explicit failure store statuses "used", "failed" and "not_enabled".
-								switch fs := i.ReadString(); FailureStoreStatus(fs) {
-								case FailureStoreStatusUsed:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Used++
-								case FailureStoreStatusFailed:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.Failed++
-								case FailureStoreStatusNotEnabled:
-									(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.NotEnabled++
-								}
+								failureStore = FailureStoreStatus(i.ReadString())
 							case "error":
 								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
 									switch s {
@@ -175,10 +201,23 @@ func init() {
 
 						item.Position = idx
 						idx++
+						// The failure store status is counted once the item is complete,
+						// since the response does not guarantee that `_index` comes first.
+						(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.add(failureStore)
+						if m := (*((*BulkIndexerResponseStat)(ptr))).IndexStats; m != nil && failureStore != "" {
+							s := m[item.Index]
+							s.FailureStoreDocs.add(failureStore)
+							m[item.Index] = s
+						}
 						if item.Error.Type != "" || item.Status > 201 {
 							(*((*BulkIndexerResponseStat)(ptr))).FailedDocs = append((*((*BulkIndexerResponseStat)(ptr))).FailedDocs, item)
 						} else {
 							(*((*BulkIndexerResponseStat)(ptr))).Indexed = (*((*BulkIndexerResponseStat)(ptr))).Indexed + 1
+							if m := (*((*BulkIndexerResponseStat)(ptr))).IndexStats; m != nil {
+								s := m[item.Index]
+								s.Indexed++
+								m[item.Index] = s
+							}
 						}
 						return true
 					})
@@ -455,6 +494,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	b.bytesFlushed = bytesFlushed
 	b.bytesUncompFlushed = bytesUncompFlushed
 	var resp BulkIndexerResponseStat
+	if b.config.PopulateIndexStats {
+		// A non-nil map enables per-index counting in the response decoder.
+		resp.IndexStats = make(map[string]BulkIndexerIndexStat)
+	}
 	if res.StatusCode > 299 {
 		var s string
 		if b.config.IncludeSourceOnError == Unset {
@@ -679,6 +722,16 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 			// - non-retriable errors
 			// - retriable errors that reached the retry limit
 			resp.FailedDocs = nonRetriable
+		}
+	}
+
+	// Failures are counted here, rather than in the response decoder, so that
+	// documents pending a retry are not included.
+	if resp.IndexStats != nil {
+		for _, doc := range resp.FailedDocs {
+			s := resp.IndexStats[doc.Index]
+			s.Failed++
+			resp.IndexStats[doc.Index] = s
 		}
 	}
 
