@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/elastic/elastic-transport-go/v8 v8.8.0
 	github.com/json-iterator/go v1.1.12
-	github.com/klauspost/compress v1.18.5
+	github.com/klauspost/compress v1.18.6
 	github.com/stretchr/testify v1.11.1
 	go.elastic.co/fastjson v1.5.1
 	go.opentelemetry.io/otel v1.40.0
