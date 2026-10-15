@@ -314,6 +314,16 @@ type BulkIndexerConfig struct {
 	// IncludeSourceOnError is Unset by default
 	IncludeSourceOnError Value
 
+	// PopulateIndexStats controls whether BulkIndexerResponseStat.IndexStats
+	// is populated with the number of indexed and failed documents per
+	// destination index.
+	//
+	// This adds a map allocation per flush, and the number of entries grows with
+	// the number of distinct destination indices in a bulk request.
+	//
+	// PopulateIndexStats is disabled by default.
+	PopulateIndexStats bool
+
 	// PopulateFailedDocsInput controls whether each BulkIndexerResponseItem.Input
 	// in BulkIndexerResponseStat.FailedDocs is populated with the input of the item,
 	// which includes the action line and the document line.

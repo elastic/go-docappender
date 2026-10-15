@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -896,4 +897,93 @@ func TestSettingFilterPath(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestPopulateIndexStats(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, result := docappendertest.DecodeBulkRequest(r)
+				for _, itemsMap := range result.Items {
+					for k, item := range itemsMap {
+						switch item.Index {
+						case "bad", "retried":
+							result.HasErrors = true
+							item.Status = http.StatusBadRequest
+							if item.Index == "retried" {
+								item.Status = http.StatusTooManyRequests
+							}
+							item.Error.Type = "validation_error"
+							itemsMap[k] = item
+						}
+					}
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+			indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:             client,
+				MaxDocumentRetries: 1,
+				PopulateIndexStats: enabled,
+			})
+			require.NoError(t, err)
+			for _, index := range []string{"a", "b", "a", "bad", "a", "retried", "bad"} {
+				require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+					Index: index,
+					Body:  strings.NewReader(`{"1":"2"}`),
+				}))
+			}
+
+			stat, err := indexer.Flush(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, int64(4), stat.Indexed)
+			assert.Len(t, stat.FailedDocs, 2)
+			assert.Equal(t, int64(1), stat.RetriedDocs)
+			if enabled {
+				// The document pending retry is not counted as failed.
+				assert.Equal(t, map[string]docappender.BulkIndexerIndexStat{
+					"a":   {Indexed: 3},
+					"b":   {Indexed: 1},
+					"bad": {Failed: 2},
+				}, stat.IndexStats)
+			} else {
+				assert.Nil(t, stat.IndexStats)
+			}
+		})
+	}
+}
+
+func TestPopulateIndexStatsFailureStore(t *testing.T) {
+	// failure_store is deliberately sent before _index, to check that the
+	// counts do not depend on the order of the fields in the response.
+	const body = `{"items":[
+		{"create":{"failure_store":"used","_index":".fs-a","status":201}},
+		{"create":{"_index":"a","status":201}},
+		{"create":{"failure_store":"used","_index":".fs-a","status":201}},
+		{"create":{"failure_store":"not_enabled","_index":"b","status":400,"error":{"type":"mapper_parsing_exception"}}},
+		{"create":{"failure_store":"failed","_index":"b","status":400,"error":{"type":"mapper_parsing_exception"}}},
+		{"create":{"failure_store":"not_applicable_or_unknown","_index":"c","status":201}}
+	]}`
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.WriteString(w, body)
+		require.NoError(t, err)
+	})
+	indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+		Client:             client,
+		PopulateIndexStats: true,
+	})
+	require.NoError(t, err)
+	for range 6 {
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{Index: "x", Body: strings.NewReader(`{}`)}))
+	}
+
+	stat, err := indexer.Flush(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, docappender.FailureStoreDocsStat{Used: 2, Failed: 1, NotEnabled: 1}, stat.FailureStoreDocs)
+	assert.Equal(t, map[string]docappender.BulkIndexerIndexStat{
+		".fs-a": {Indexed: 2, FailureStoreDocs: docappender.FailureStoreDocsStat{Used: 2}},
+		"a":     {Indexed: 1},
+		"b":     {Failed: 2, FailureStoreDocs: docappender.FailureStoreDocsStat{Failed: 1, NotEnabled: 1}},
+		"c":     {Indexed: 1},
+	}, stat.IndexStats)
 }
