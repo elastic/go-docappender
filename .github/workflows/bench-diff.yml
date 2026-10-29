@@ -9,6 +9,10 @@ permissions:
 jobs:
   run-benchdiff:
     runs-on: ubuntu-latest
+    # Branches (push) or forked PRs. Same-repo PRs already run on push for the same sha.
+    if: |
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.fork == true
     permissions:
       checks: write
     steps:
