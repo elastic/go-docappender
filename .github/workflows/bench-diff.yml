@@ -1,8 +1,7 @@
 name: bench-diff
 on:
   push:
-  pull_request_target:
-    types: [labeled, synchronize]
+  pull_request:
 
 permissions:
   contents: read
@@ -10,29 +9,15 @@ permissions:
 jobs:
   run-benchdiff:
     runs-on: ubuntu-latest
-    # Support for branches, non-forked-prs or forked-prs with a label
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test') ||
-      ! startsWith(github.event_name, 'pull_request') ||
-      (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.fork == false)
     permissions:
       checks: write
     steps:
-    - name: Get sha commit
-      id: event
-      run: |
-        echo "DEBUG: event type(${{ github.event_name }})"
-        ref="${{ github.sha }}"
-        if [ "${{ startsWith(github.event_name, 'pull_request') }}" = "true" ] ; then
-          ref="${{ github.event.pull_request.head.sha }}"
-        fi
-        echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0
         persist-credentials: false
-        ref: ${{ steps.event.outputs.ref }}
-    - uses: actions/setup-go@v7
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
     # Version: https://github.com/WillAbides/benchdiff-action/releases/tag/v0.3.5
@@ -40,7 +25,8 @@ jobs:
       id: benchdiff
       with:
         benchdiff_version: 0.9.1
-        status_sha: ${{ steps.event.outputs.ref }}
+        # Only post the check-run on push: pull_request tokens are read-only for forks and dependabot.
+        report_status: ${{ github.event_name == 'push' }}
         status_name: benchdiff-result
         status_on_degraded: neutral
         # See https://github.com/WillAbides/benchdiff
@@ -54,3 +40,13 @@ jobs:
           --tolerance=20
           --benchmem
           --debug
+    - name: Publish benchstat output to the job summary
+      if: always() && steps.benchdiff.outputs.benchstat_output != ''
+      env:
+        BENCHSTAT_OUTPUT: ${{ steps.benchdiff.outputs.benchstat_output }}
+      run: |
+        {
+          echo "## Benchdiff results"
+          echo
+          printf '%s\n' "$BENCHSTAT_OUTPUT"
+        } >> "$GITHUB_STEP_SUMMARY"
