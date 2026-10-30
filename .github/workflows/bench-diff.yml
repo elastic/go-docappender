@@ -1,8 +1,7 @@
 name: bench-diff
 on:
   push:
-  pull_request_target:
-    types: [labeled, synchronize]
+  pull_request:
 
 permissions:
   contents: read
@@ -10,28 +9,18 @@ permissions:
 jobs:
   run-benchdiff:
     runs-on: ubuntu-latest
-    # Support for branches, non-forked-prs or forked-prs with a label
+    # Branches (push) or forked PRs. Same-repo PRs already run on push for the same sha.
     if: |
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test') ||
-      ! startsWith(github.event_name, 'pull_request') ||
-      (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.fork == false)
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.fork == true
     permissions:
       checks: write
     steps:
-    - name: Get sha commit
-      id: event
-      run: |
-        echo "DEBUG: event type(${{ github.event_name }})"
-        ref="${{ github.sha }}"
-        if [ "${{ startsWith(github.event_name, 'pull_request') }}" = "true" ] ; then
-          ref="${{ github.event.pull_request.head.sha }}"
-        fi
-        echo "ref=${ref}" >> "$GITHUB_OUTPUT"
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
         persist-credentials: false
-        ref: ${{ steps.event.outputs.ref }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
     - uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
@@ -40,7 +29,8 @@ jobs:
       id: benchdiff
       with:
         benchdiff_version: 0.9.1
-        status_sha: ${{ steps.event.outputs.ref }}
+        # Only post the check-run on push: pull_request tokens are read-only for forks and dependabot.
+        report_status: ${{ github.event_name == 'push' }}
         status_name: benchdiff-result
         status_on_degraded: neutral
         # See https://github.com/WillAbides/benchdiff
@@ -54,3 +44,13 @@ jobs:
           --tolerance=20
           --benchmem
           --debug
+    - name: Publish benchstat output to the job summary
+      if: always() && steps.benchdiff.outputs.benchstat_output != ''
+      env:
+        BENCHSTAT_OUTPUT: ${{ steps.benchdiff.outputs.benchstat_output }}
+      run: |
+        {
+          echo "## Benchdiff results"
+          echo
+          printf '%s\n' "$BENCHSTAT_OUTPUT"
+        } >> "$GITHUB_STEP_SUMMARY"
