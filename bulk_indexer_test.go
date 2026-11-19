@@ -767,6 +767,187 @@ func TestBulkIndexerRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 	}
 }
 
+// bulkReplies returns a client that answers the nth bulk request with replies[n].
+func bulkReplies(t *testing.T, replies ...http.HandlerFunc) docappender.BulkIndexerConfig {
+	t.Helper()
+	var n atomic.Int32
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		if !assert.Less(t, i, len(replies), "unexpected bulk request") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		replies[i](w, r)
+	})
+	return docappender.BulkIndexerConfig{Client: client}
+}
+
+// documentStatuses checks that the bulk request has the documents with the
+// given IDs, in order, and replies with one status per document.
+func documentStatuses(t *testing.T, ids []string, statuses ...int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		docs, result := docappendertest.DecodeBulkRequest(r)
+		var sent []string
+		for _, doc := range docs {
+			var d struct{ ID string }
+			assert.NoError(t, json.Unmarshal(doc, &d))
+			sent = append(sent, d.ID)
+		}
+		assert.Equal(t, ids, sent, "documents in the bulk request")
+		for i, status := range statuses {
+			item := result.Items[i]["create"]
+			item.Status = status
+			switch {
+			case status == http.StatusTooManyRequests:
+				item.Error.Type = "es_rejected_execution_exception"
+				result.HasErrors = true
+			case status >= http.StatusBadRequest:
+				item.Error.Type = "mapper_parsing_exception"
+				result.HasErrors = true
+			}
+			result.Items[i]["create"] = item
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(result))
+	}
+}
+
+func addDocuments(t *testing.T, indexer *docappender.BulkIndexer, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+			Index: "test",
+			Body:  strings.NewReader(fmt.Sprintf(`{"id":%q}`, id)),
+		}))
+	}
+}
+
+func flushNoError(t *testing.T, indexer *docappender.BulkIndexer) docappender.BulkIndexerResponseStat {
+	t.Helper()
+	stat, err := indexer.Flush(t.Context())
+	require.NoError(t, err)
+	return stat
+}
+
+// TestBulkIndexerRetryCountMovesWithDocument checks that a retried document
+// takes its retry count to its new position, and that a new document gets
+// the full number of retries, also at a position another document used.
+func TestBulkIndexerRetryCountMovesWithDocument(t *testing.T) {
+	const ok, bad, tooMany = http.StatusCreated, http.StatusBadRequest, http.StatusTooManyRequests
+	cfg := bulkReplies(t,
+		documentStatuses(t, []string{"a", "b"}, tooMany, tooMany),             // a and b: retry 1
+		documentStatuses(t, []string{"a", "b"}, ok, tooMany),                  // b: retry 2, moves from position 1 to 0
+		documentStatuses(t, []string{"b", "c"}, tooMany, tooMany),             // b: no retries left; c: retry 1 at b's old position
+		documentStatuses(t, []string{"c", "bad", "d"}, tooMany, bad, tooMany), // c: retry 2; bad: 400 dropped; d: retry 1, moves 2 to 1
+		documentStatuses(t, []string{"c", "d"}, ok, ok),
+	)
+	cfg.MaxDocumentRetries = 2
+	indexer, err := docappender.NewBulkIndexer(cfg)
+	require.NoError(t, err)
+
+	addDocuments(t, indexer, "a", "b")
+	assert.Equal(t, 1, flushNoError(t, indexer).GreatestRetry)
+	assert.Equal(t, 2, flushNoError(t, indexer).GreatestRetry)
+
+	addDocuments(t, indexer, "c")
+	stat := flushNoError(t, indexer)
+	require.Len(t, stat.FailedDocs, 1, "only b used all its retries")
+	assert.Equal(t, 0, stat.FailedDocs[0].Position, "b")
+	assert.Equal(t, 1, stat.GreatestRetry, "c is retried for the 1st time")
+
+	addDocuments(t, indexer, "bad", "d")
+	stat = flushNoError(t, indexer)
+	require.Len(t, stat.FailedDocs, 1, "bad fails without retry")
+	assert.Equal(t, 1, stat.FailedDocs[0].Position, "bad")
+	assert.Equal(t, bad, stat.FailedDocs[0].Status)
+	assert.Equal(t, int64(2), stat.RetriedDocs, "c and d are retried")
+	assert.Equal(t, 2, stat.GreatestRetry, "c is retried for the 2nd time")
+
+	assert.Equal(t, int64(2), flushNoError(t, indexer).Indexed)
+}
+
+// TestBulkIndexerRetryCountDroppedWithDocument checks that a document's
+// retry count is dropped when the document leaves the buffer, so the next
+// document at its position gets the full number of retries.
+func TestBulkIndexerRetryCountDroppedWithDocument(t *testing.T) {
+	const tooMany = http.StatusTooManyRequests
+	testCases := map[string]struct {
+		// drop removes b, which is pending a retry, from the buffer.
+		dropReply http.HandlerFunc // reply to the bulk request in drop, if any
+		drop      func(t *testing.T, indexer *docappender.BulkIndexer)
+	}{
+		"b fails permanently": {
+			dropReply: documentStatuses(t, []string{"b"}, tooMany),
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				assert.Len(t, flushNoError(t, indexer).FailedDocs, 1)
+			},
+		},
+		"b fails permanently with 400": {
+			dropReply: documentStatuses(t, []string{"b"}, http.StatusBadRequest),
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				assert.Len(t, flushNoError(t, indexer).FailedDocs, 1)
+			},
+		},
+		"request fails with 413": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				var flushErr docappender.ErrorFlushFailed
+				require.ErrorAs(t, err, &flushErr)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
+			},
+		},
+		"transport error": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				panic(http.ErrAbortHandler) // close the connection without a response
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				assert.ErrorContains(t, err, "failed to execute the request")
+			},
+		},
+		"response cannot be decoded": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				_, err := w.Write([]byte("not json"))
+				assert.NoError(t, err)
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				assert.ErrorContains(t, err, "error decoding bulk response")
+			},
+		},
+		"ResetBuf": {
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) { indexer.ResetBuf() },
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			replies := []http.HandlerFunc{documentStatuses(t, []string{"a", "b"}, http.StatusCreated, tooMany)}
+			if tc.dropReply != nil {
+				replies = append(replies, tc.dropReply)
+			}
+			replies = append(replies, documentStatuses(t, []string{"c"}, tooMany)) // c is at b's old position 0
+			cfg := bulkReplies(t, replies...)
+			cfg.MaxDocumentRetries = 1
+			indexer, err := docappender.NewBulkIndexer(cfg)
+			require.NoError(t, err)
+
+			addDocuments(t, indexer, "a", "b")
+			require.Equal(t, int64(1), flushNoError(t, indexer).RetriedDocs, "b is pending a retry")
+
+			tc.drop(t, indexer)
+			require.Zero(t, indexer.Items(), "b is dropped")
+
+			addDocuments(t, indexer, "c")
+			stat := flushNoError(t, indexer)
+			assert.Empty(t, stat.FailedDocs)
+			assert.Equal(t, int64(1), stat.RetriedDocs, "c is retried")
+			assert.Equal(t, 1, stat.GreatestRetry, "c is retried for the 1st time")
+		})
+	}
+}
+
 func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {

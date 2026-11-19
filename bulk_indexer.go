@@ -73,8 +73,12 @@ type BulkIndexer struct {
 	writer             *countWriter
 	gzipw              *gzip.Writer
 	buf                bytes.Buffer
-	retryCounts        map[int]int
-	requireDataStream  bool
+	// retryCounts holds the retry count of each retried document in the
+	// buffer, by position. Flush writes the retried documents first, so they
+	// are the first len(retryCounts) documents; documents added later have no
+	// entry. resetBuf drops the counts with the buffer.
+	retryCounts       []int
+	requireDataStream bool
 }
 
 type BulkIndexerResponseStat struct {
@@ -255,7 +259,6 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 func newBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
 		config:            cfg,
-		retryCounts:       make(map[int]int),
 		requireDataStream: cfg.RequireDataStream,
 	}
 
@@ -294,9 +297,10 @@ func (b *BulkIndexer) ResetBuf() {
 	b.resetBuf()
 }
 
-// resetBuf resets compressed buffer after flushing it to Elasticsearch
+// resetBuf discards the buffered documents and their retry counts.
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
+	b.retryCounts = nil
 	b.writer.bytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
@@ -484,6 +488,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 	// original bulk request body
 	bodyBuf := b.buf.Bytes()
+	// Keep the retry counts of the sent documents, by position in the bulk
+	// request, before resetBuf drops them.
+	sentRetryCounts := b.retryCounts
 
 	// Reset the buffer and gzip writer so they can be reused in case
 	// document level retries are needed.
@@ -550,22 +557,6 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 
 	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
-		// Eliminate previous retry counts that aren't present in the bulk
-		// request response.
-		for k := range b.retryCounts {
-			found := false
-			for _, res := range resp.FailedDocs {
-				if res.Position == k {
-					found = true
-					break
-				}
-			}
-			if !found {
-				// Retried request succeeded, remove from retry counts
-				delete(b.retryCounts, k)
-			}
-		}
-
 		if len(resp.FailedDocs) > 0 {
 			buf := make([]byte, 0, 4096)
 
@@ -687,8 +678,10 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 			for _, item := range resp.FailedDocs {
 				if b.config.MaxDocumentRetries > 0 && b.shouldRetryOnStatus(item.Status) {
-					// Increment retry count for the positions found.
-					count := b.retryCounts[item.Position] + 1
+					count := 1
+					if item.Position < len(sentRetryCounts) {
+						count += sentRetryCounts[item.Position]
+					}
 					// check if we are above the maxDocumentRetry setting
 					if count > b.config.MaxDocumentRetries {
 						// do not retry, return the document as failed
@@ -697,19 +690,16 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 						}
 						continue
 					}
-					if resp.GreatestRetry < count {
-						resp.GreatestRetry = count
-					}
-
-					// Since some items may have succeeded, counter positions need
-					// to be updated to match the next current buffer position.
-					b.retryCounts[b.itemsAdded] = count
-
 					if err := writeItemAtPos(b.writer, item.Position); err != nil {
 						return resp, err
 					}
-					resp.RetriedDocs++
+					// Record the count only for a document that is in the buffer.
+					b.retryCounts = append(b.retryCounts, count)
 					b.itemsAdded++
+					resp.RetriedDocs++
+					if resp.GreatestRetry < count {
+						resp.GreatestRetry = count
+					}
 				} else {
 					// If it's not a retriable error, treat the document as failed
 					if err := appendNonRetriable(item); err != nil {
