@@ -1599,7 +1599,7 @@ func TestAppenderFlushGoroutineStopped(t *testing.T) {
 
 func TestAppenderUnknownResponseFields(t *testing.T) {
 	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"ingest_took":123}`))
+		w.Write([]byte(`{"ingest_took":123,"items":[{"create":{"status":201}}],"took":1}`))
 	})
 	indexer, err := docappender.New(client, docappender.Config{})
 	require.NoError(t, err)
