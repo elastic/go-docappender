@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"unsafe"
 
@@ -80,6 +81,10 @@ type BulkIndexer struct {
 	// entry. resetBuf drops the counts with the buffer.
 	retryCounts       []int
 	requireDataStream bool
+	// deletes holds, in ascending order, the positions of the "delete" items
+	// in the buffer. Delete items are encoded as a single action line, while
+	// all other items take two lines (action and document).
+	deletes []int
 }
 
 type BulkIndexerResponseStat struct {
@@ -392,6 +397,7 @@ func (b *BulkIndexer) ResetBuf() {
 // resetBuf discards the buffered documents and their retry counts.
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
+	b.deletes = nil
 	b.retryCounts = nil
 	b.writer.bytesWritten = 0
 	b.buf.Reset()
@@ -456,11 +462,17 @@ func (b *BulkIndexer) Add(item BulkIndexerItem) error {
 		item.DynamicTemplates,
 		item.RequireDataStream,
 	)
-	if _, err := item.Body.WriteTo(b.writer); err != nil {
-		return fmt.Errorf("failed to write bulk indexer item: %w", err)
-	}
-	if _, err := b.writer.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("failed to write newline: %w", err)
+	if action == ActionDelete {
+		// The bulk API expects no document line for delete actions, so
+		// item.Body (which may be nil) is not written.
+		b.deletes = append(b.deletes, b.itemsAdded)
+	} else {
+		if _, err := item.Body.WriteTo(b.writer); err != nil {
+			return fmt.Errorf("failed to write bulk indexer item: %w", err)
+		}
+		if _, err := b.writer.Write([]byte("\n")); err != nil {
+			return fmt.Errorf("failed to write newline: %w", err)
+		}
 	}
 	b.itemsAdded++
 	return nil
@@ -584,6 +596,8 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	// Keep the retry counts of the sent documents, by position in the bulk
 	// request, before resetBuf drops them.
 	sentRetryCounts := b.retryCounts
+	// positions of the delete items in the original bulk request body
+	sentDeletes := b.deletes
 
 	// Reset the buffer and gzip writer so they can be reused in case
 	// document level retries are needed.
@@ -675,9 +689,15 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 
 			// Each document uses two lines: the action and the source.
 			writeItemAtPos := func(to io.Writer, pos int) error {
-				err := advance(nil, pos*2)
+				deletesBefore, isDelete := deletesBeforePos(sentDeletes, pos)
+				startln := pos*2 - deletesBefore
+				endln := startln + 2
+				if isDelete {
+					endln = startln + 1
+				}
+				err := advance(nil, startln)
 				if err == nil {
-					err = advance(to, pos*2+2)
+					err = advance(to, endln)
 				}
 				if err != nil {
 					return fmt.Errorf("failed to extract document at position %d: %w", pos, err)
@@ -717,6 +737,9 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 					if err := writeItemAtPos(b.writer, item.Position); err != nil {
 						b.resetBuf()
 						return BulkIndexerResponseStat{}, err
+					}
+					if _, isDelete := deletesBeforePos(sentDeletes, item.Position); isDelete {
+						b.deletes = append(b.deletes, b.itemsAdded)
 					}
 					// Record the count only for a document that is in the buffer.
 					b.retryCounts = append(b.retryCounts, count)
@@ -792,6 +815,13 @@ func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
 		}
 	}
 	return false
+}
+
+// deletesBeforePos returns the number of delete items located before pos in
+// the sorted deletes slice, and whether the item at pos is itself a delete.
+func deletesBeforePos(deletes []int, pos int) (before int, isDelete bool) {
+	before = sort.SearchInts(deletes, pos)
+	return before, before < len(deletes) && deletes[before] == pos
 }
 
 type ErrorFlushFailed struct {

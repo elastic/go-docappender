@@ -18,6 +18,7 @@
 package docappender_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -330,9 +331,6 @@ func TestAction(t *testing.T) {
 		Index:    "testidx",
 		Action:   "delete",
 		Pipeline: "test-pipeline2",
-		Body: newJSONReader(map[string]any{
-			"@timestamp": time.Now().Format(docappendertest.TimestampFormat),
-		}),
 	})
 	require.NoError(t, err)
 
@@ -1475,6 +1473,135 @@ func TestBulkIndexerExtractsLargeFailedDocuments(t *testing.T) {
 			stat, err = bi.Flush(t.Context())
 			require.NoError(t, err)
 			assert.EqualValues(t, 2, stat.Indexed)
+		})
+	}
+}
+
+func TestBulkIndexerDelete(t *testing.T) {
+	test := func(t *testing.T, compressionLevel int, withBody bool) {
+		var body []byte
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			var rd io.Reader = r.Body
+			if r.Header.Get("Content-Encoding") == "gzip" {
+				gr, err := gzip.NewReader(r.Body)
+				require.NoError(t, err)
+				rd = gr
+			}
+			var err error
+			body, err = io.ReadAll(rd)
+			require.NoError(t, err)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.Header.Del("Content-Encoding")
+			_, result := docappendertest.DecodeBulkRequest(r)
+			json.NewEncoder(w).Encode(result)
+		})
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:           client,
+			CompressionLevel: compressionLevel,
+		})
+		require.NoError(t, err)
+
+		item := docappender.BulkIndexerItem{Index: "testidx", Action: "delete", DocumentID: "1"}
+		if withBody {
+			// The body of a delete item must not be sent.
+			item.Body = strings.NewReader(`{"ignored":true}`)
+		}
+		require.NoError(t, indexer.Add(item))
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+			Index: "testidx",
+			Body:  strings.NewReader(`{"a":"b"}`),
+		}))
+
+		stat, err := indexer.Flush(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), stat.Indexed)
+		assert.Equal(t, `{"delete":{"_id":"1","_index":"testidx"}}
+{"create":{"_index":"testidx"}}
+{"a":"b"}
+`, string(body))
+	}
+	for _, level := range []int{0, 1} {
+		for _, withBody := range []bool{false, true} {
+			t.Run(fmt.Sprintf("compression_level=%d/body=%v", level, withBody), func(t *testing.T) {
+				test(t, level, withBody)
+			})
+		}
+	}
+}
+
+func TestBulkIndexerDeleteRetryAndFailedInput(t *testing.T) {
+	test := func(t *testing.T, compressionLevel int) {
+		var requests [][]string
+		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+			var rd io.Reader = r.Body
+			if r.Header.Get("Content-Encoding") == "gzip" {
+				gr, err := gzip.NewReader(r.Body)
+				require.NoError(t, err)
+				rd = gr
+			}
+			b, err := io.ReadAll(rd)
+			require.NoError(t, err)
+			requests = append(requests, strings.Split(strings.TrimSuffix(string(b), "\n"), "\n"))
+			r.Body = io.NopCloser(bytes.NewReader(b))
+			r.Header.Del("Content-Encoding")
+			_, result := docappendertest.DecodeBulkRequest(r)
+			if len(requests) == 1 {
+				// Fail the items at positions 1 (delete), 2 (create) and
+				// 3 (delete); item 0 (create) succeeds.
+				result.HasErrors = true
+				for i, itemsMap := range result.Items {
+					for k, item := range itemsMap {
+						switch i {
+						case 1, 2:
+							item.Status = http.StatusTooManyRequests
+						case 3:
+							item.Status = http.StatusBadRequest
+						default:
+							continue
+						}
+						item.Error.Type = "error"
+						itemsMap[k] = item
+					}
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+		})
+		indexer, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client:                  client,
+			CompressionLevel:        compressionLevel,
+			MaxDocumentRetries:      1,
+			PopulateFailedDocsInput: true,
+			RetryOnDocumentStatus:   []int{http.StatusTooManyRequests},
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{Index: "a", Body: strings.NewReader(`{"n":0}`)}))
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{Index: "b", Action: "delete", DocumentID: "1"}))
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{Index: "c", Body: strings.NewReader(`{"n":2}`)}))
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{Index: "d", Action: "delete", DocumentID: "3"}))
+
+		stat, err := indexer.Flush(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), stat.RetriedDocs)
+		require.Len(t, stat.FailedDocs, 1)
+		assert.Equal(t, 3, stat.FailedDocs[0].Position)
+		assert.Equal(t, `{"delete":{"_id":"3","_index":"d"}}
+`, stat.FailedDocs[0].Input)
+
+		// Retried items are written again with the right framing.
+		stat, err = indexer.Flush(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), stat.Indexed)
+		require.Len(t, requests, 2)
+		assert.Equal(t, []string{
+			`{"delete":{"_id":"1","_index":"b"}}`,
+			`{"create":{"_index":"c"}}`,
+			`{"n":2}`,
+		}, requests[1])
+	}
+	for _, level := range []int{0, 1} {
+		t.Run(fmt.Sprintf("compression_level=%d", level), func(t *testing.T) {
+			test(t, level)
 		})
 	}
 }

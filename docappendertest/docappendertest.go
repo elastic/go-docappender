@@ -172,15 +172,18 @@ func decodeBulkRequest(r *http.Request) (
 		var actionType string
 		for actionType = range action {
 		}
-		if !scanner.Scan() {
-			panic("expected source")
-		}
+		// Delete actions are not followed by a source line.
+		if actionType != "delete" {
+			if !scanner.Scan() {
+				panic("expected source")
+			}
 
-		doc := append([]byte{}, scanner.Bytes()...)
-		if !json.Valid(doc) {
-			panic(fmt.Errorf("invalid JSON: %s", doc))
+			doc := append([]byte{}, scanner.Bytes()...)
+			if !json.Valid(doc) {
+				panic(fmt.Errorf("invalid JSON: %s", doc))
+			}
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 
 		item := BulkIndexerResponseItem{Status: http.StatusCreated, Index: action[actionType].Index}
 		result.Items = append(result.Items, map[string]BulkIndexerResponseItem{actionType: item})
