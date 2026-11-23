@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,8 +75,12 @@ type BulkIndexer struct {
 	writer             *countWriter
 	gzipw              *gzip.Writer
 	buf                bytes.Buffer
-	retryCounts        map[int]int
-	requireDataStream  bool
+	// retryCounts holds the retry count of each retried document in the
+	// buffer, by position. Flush writes the retried documents first, so they
+	// are the first len(retryCounts) documents; documents added later have no
+	// entry. resetBuf drops the counts with the buffer.
+	retryCounts       []int
+	requireDataStream bool
 	// deletes holds, in ascending order, the positions of the "delete" items
 	// in the buffer. Delete items are encoded as a single action line, while
 	// all other items take two lines (action and document).
@@ -170,71 +175,162 @@ const (
 
 func init() {
 	jsoniter.RegisterTypeDecoderFunc("docappender.BulkIndexerResponseStat", func(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
-		iter.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
-			switch s {
-			case "items":
-				var idx int
-				iter.ReadArrayCB(func(i *jsoniter.Iterator) bool {
-					return i.ReadMapCB(func(i *jsoniter.Iterator, s string) bool {
-						var item BulkIndexerResponseItem
-						var failureStore FailureStoreStatus
-						i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
-							switch s {
-							case "_index":
-								item.Index = i.ReadString()
-							case "status":
-								item.Status = i.ReadInt()
-							case "failure_store":
-								failureStore = FailureStoreStatus(i.ReadString())
-							case "error":
-								i.ReadObjectCB(func(i *jsoniter.Iterator, s string) bool {
-									switch s {
-									case "type":
-										item.Error.Type = i.ReadString()
-									case "reason":
-										item.Error.Reason = i.ReadString()
-									default:
-										i.Skip()
-									}
-									return true
-								})
-							default:
-								i.Skip()
-							}
-							return true
-						})
+		_, iter.Error = decodeBulkResponse(iter, (*BulkIndexerResponseStat)(ptr), false)
+	})
+}
 
-						item.Position = idx
-						idx++
-						// The failure store status is counted once the item is complete,
-						// since the response does not guarantee that `_index` comes first.
-						(*((*BulkIndexerResponseStat)(ptr))).FailureStoreDocs.add(failureStore)
-						if m := (*((*BulkIndexerResponseStat)(ptr))).IndexStats; m != nil && failureStore != "" {
-							s := m[item.Index]
-							s.FailureStoreDocs.add(failureStore)
-							m[item.Index] = s
-						}
-						if item.Error.Type != "" || item.Status > 201 {
-							(*((*BulkIndexerResponseStat)(ptr))).FailedDocs = append((*((*BulkIndexerResponseStat)(ptr))).FailedDocs, item)
-						} else {
-							(*((*BulkIndexerResponseStat)(ptr))).Indexed = (*((*BulkIndexerResponseStat)(ptr))).Indexed + 1
-							if m := (*((*BulkIndexerResponseStat)(ptr))).IndexStats; m != nil {
-								s := m[item.Index]
-								s.Indexed++
-								m[item.Index] = s
-							}
-						}
-						return true
-					})
-				})
-				// no need to proceed further, return early
+// decodeBulkResponse reads through the closing brace. On error, resp may hold partial counts.
+func decodeBulkResponse(iter *jsoniter.Iterator, resp *BulkIndexerResponseStat, requireStatus bool) (int, error) {
+	var items int
+	var seenItems bool
+	var err error
+	iter.ReadMapCB(func(i *jsoniter.Iterator, field string) bool {
+		if field != "items" {
+			i.Skip()
+			return i.Error == nil
+		}
+		if seenItems {
+			err = errors.New("response has more than one items field")
+			return false
+		}
+		seenItems = true
+		if i.WhatIsNext() != jsoniter.ArrayValue {
+			err = errors.New("items is not a JSON array")
+			return false
+		}
+		return i.ReadArrayCB(func(i *jsoniter.Iterator) bool {
+			item := BulkIndexerResponseItem{Position: items}
+			failureStore, itemErr := decodeBulkItem(i, &item)
+			err = itemErr
+			if err != nil || i.Error != nil {
 				return false
-			default:
-				i.Skip()
-				return true
 			}
+			if requireStatus && item.Status == 0 {
+				err = fmt.Errorf("item %d has no status", items)
+				return false
+			}
+			items++
+
+			// Count failure store results after decoding the index name.
+			resp.FailureStoreDocs.add(failureStore)
+			if m := resp.IndexStats; m != nil && failureStore != "" {
+				s := m[item.Index]
+				s.FailureStoreDocs.add(failureStore)
+				m[item.Index] = s
+			}
+			if item.Error.Type != "" || item.Status > 201 {
+				resp.FailedDocs = append(resp.FailedDocs, item)
+			} else {
+				resp.Indexed++
+				if m := resp.IndexStats; m != nil {
+					s := m[item.Index]
+					s.Indexed++
+					m[item.Index] = s
+				}
+			}
+			return true
 		})
 	})
+	if iter.Error != nil {
+		return items, iter.Error
+	}
+	return items, err
+}
+
+func decodeBulkItem(iter *jsoniter.Iterator, item *BulkIndexerResponseItem) (FailureStoreStatus, error) {
+	var failureStore FailureStoreStatus
+	var seenAction bool
+	var err error
+	ok := iter.ReadMapCB(func(i *jsoniter.Iterator, _ string) bool {
+		if seenAction {
+			err = fmt.Errorf("item %d has more than one action", item.Position)
+			return false
+		}
+		seenAction = true
+		if i.WhatIsNext() != jsoniter.ObjectValue {
+			err = fmt.Errorf("item %d action result is not a JSON object", item.Position)
+			return false
+		}
+		return i.ReadMapCB(func(i *jsoniter.Iterator, field string) bool {
+			switch field {
+			case "_index":
+				item.Index = i.ReadString()
+			case "status":
+				if item.Status != 0 {
+					err = fmt.Errorf("item %d has more than one status field", item.Position)
+					return false
+				}
+				item.Status = i.ReadInt()
+				if item.Status < 200 || item.Status > 599 {
+					err = fmt.Errorf("item %d has invalid status %d", item.Position, item.Status)
+					return false
+				}
+			case "failure_store":
+				failureStore = FailureStoreStatus(i.ReadString())
+			case "error":
+				return i.ReadMapCB(func(i *jsoniter.Iterator, field string) bool {
+					switch field {
+					case "type":
+						item.Error.Type = i.ReadString()
+					case "reason":
+						item.Error.Reason = i.ReadString()
+					default:
+						i.Skip()
+					}
+					return i.Error == nil
+				})
+			default:
+				i.Skip()
+			}
+			return i.Error == nil
+		})
+	})
+	if ok && !seenAction {
+		err = fmt.Errorf("item %d has no action", item.Position)
+	}
+	return failureStore, err
+}
+
+// bulkResponseReader saves the first read error, including one returned with data.
+// jsoniter ignores read errors returned with data and can include body text in parse errors.
+type bulkResponseReader struct {
+	io.Reader
+	err error
+}
+
+func (r *bulkResponseReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	n, err := r.Reader.Read(p)
+	r.err = err
+	return n, err
+}
+
+func readBulkResponse(body io.Reader, resp *BulkIndexerResponseStat, requireStatus, redact bool) (int, error) {
+	r := &bulkResponseReader{Reader: body}
+	iter := jsoniter.Parse(jsoniter.ConfigDefault, r, 512)
+	var items int
+	var err error
+	if iter.WhatIsNext() == jsoniter.ObjectValue {
+		items, err = decodeBulkResponse(iter, resp, requireStatus)
+	} else {
+		err = errors.New("response body is not a JSON object")
+	}
+	if err == nil {
+		// Read to EOF to reject extra data and catch errors after the closing brace.
+		iter.WhatIsNext()
+		if iter.Error != io.EOF {
+			err = errors.New("unexpected data after response object")
+		}
+	}
+	if r.err != nil && r.err != io.EOF {
+		return items, r.err
+	}
+	if redact && err != nil && iter.Error != nil {
+		return items, errors.New("invalid JSON in response body")
+	}
+	return items, err
 }
 
 type countWriter struct {
@@ -260,7 +356,6 @@ func NewBulkIndexer(cfg BulkIndexerConfig) (*BulkIndexer, error) {
 func newBulkIndexer(cfg BulkIndexerConfig) *BulkIndexer {
 	b := &BulkIndexer{
 		config:            cfg,
-		retryCounts:       make(map[int]int),
 		requireDataStream: cfg.RequireDataStream,
 	}
 
@@ -299,10 +394,11 @@ func (b *BulkIndexer) ResetBuf() {
 	b.resetBuf()
 }
 
-// resetBuf resets compressed buffer after flushing it to Elasticsearch
+// resetBuf discards the buffered documents and their retry counts.
 func (b *BulkIndexer) resetBuf() {
 	b.itemsAdded = 0
 	b.deletes = nil
+	b.retryCounts = nil
 	b.writer.bytesWritten = 0
 	b.buf.Reset()
 	if b.gzipw != nil {
@@ -485,6 +581,7 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 
+	sentItems := b.itemsAdded
 	bytesFlushed := b.buf.Len()
 	bytesUncompFlushed := b.writer.bytesWritten
 	res, err := b.config.Client.Perform(req)
@@ -494,257 +591,172 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	}
 	defer res.Body.Close()
 
-	// original bulk request body
+	// Failed documents may need to be read from the sent request body.
 	bodyBuf := b.buf.Bytes()
+	// Keep the retry counts of the sent documents, by position in the bulk
+	// request, before resetBuf drops them.
+	sentRetryCounts := b.retryCounts
 	// positions of the delete items in the original bulk request body
-	deletes := b.deletes
+	sentDeletes := b.deletes
 
 	// Reset the buffer and gzip writer so they can be reused in case
 	// document level retries are needed.
 	b.resetBuf()
 
-	// Record the number of flushed bytes only when err == nil. The body may
-	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
 	b.bytesUncompFlushed = bytesUncompFlushed
+	redact := b.config.IncludeSourceOnError == Unset
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return BulkIndexerResponseStat{}, flushResponseError(res, redact)
+	}
+
 	var resp BulkIndexerResponseStat
 	if b.config.PopulateIndexStats {
-		// A non-nil map enables per-index counting in the response decoder.
 		resp.IndexStats = make(map[string]BulkIndexerIndexStat)
 	}
-	if res.StatusCode > 299 {
-		var s string
-		if b.config.IncludeSourceOnError == Unset {
-			var er struct {
-				Error struct {
-					Type     string `json:"type,omitempty"`
-					Reason   string `json:"reason,omitempty"`
-					CausedBy struct {
-						Type   string `json:"type,omitempty"`
-						Reason string `json:"reason,omitempty"`
-					} `json:"caused_by,omitempty"`
-				} `json:"error,omitempty"`
-			}
-
-			if err := jsoniter.NewDecoder(res.Body).Decode(&er); err == nil {
-				er.Error.Reason = ""
-				er.Error.CausedBy.Reason = ""
-
-				b, _ := json.Marshal(&er)
-				s = string(b)
-			}
-		} else {
-			b, err := io.ReadAll(res.Body)
-			if err != nil {
-				return BulkIndexerResponseStat{}, fmt.Errorf("failed to read response body: %w", err)
-			}
-			s = string(b)
-		}
-		e := ErrorFlushFailed{resp: s, statusCode: res.StatusCode}
-		switch {
-		case res.StatusCode == 429:
-			e.tooMany = true
-		case res.StatusCode >= 500:
-			e.serverError = true
-		case res.StatusCode >= 400 && res.StatusCode != 429:
-			e.clientError = true
-		}
-		return resp, e
+	// A custom filter path can omit items or their status.
+	fullResponse := b.config.FilterPath == ""
+	decodedItems, err := readBulkResponse(res.Body, &resp, fullResponse, redact)
+	if err != nil {
+		return BulkIndexerResponseStat{}, fmt.Errorf("error decoding bulk response: %w", err)
+	}
+	if decodedItems > sentItems || (fullResponse && decodedItems != sentItems) {
+		return BulkIndexerResponseStat{}, fmt.Errorf(
+			"invalid bulk response: item count %d does not match document count %d", decodedItems, sentItems,
+		)
 	}
 
-	if err := jsoniter.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return resp, fmt.Errorf("error decoding bulk response: %w", err)
-	}
-
-	if b.config.IncludeSourceOnError == Unset {
-		for i, doc := range resp.FailedDocs {
-			doc.Error.Reason = ""
-			resp.FailedDocs[i] = doc
+	if redact {
+		for i := range resp.FailedDocs {
+			resp.FailedDocs[i].Error.Reason = ""
 		}
 	}
 
 	if b.config.MaxDocumentRetries > 0 || b.config.PopulateFailedDocsInput {
-		// Eliminate previous retry counts that aren't present in the bulk
-		// request response.
-		for k := range b.retryCounts {
-			found := false
-			for _, res := range resp.FailedDocs {
-				if res.Position == k {
-					found = true
-					break
-				}
-			}
-			if !found {
-				// Retried request succeeded, remove from retry counts
-				delete(b.retryCounts, k)
-			}
-		}
-
 		if len(resp.FailedDocs) > 0 {
-			buf := make([]byte, 0, 4096)
-
-			copyBuf := make([]byte, len(bodyBuf))
-			copy(copyBuf, bodyBuf)
-
+			// Retries write to b.buf, so the scan needs its own copy of the request.
+			buf := bytes.Clone(bodyBuf)
 			var gr *gzip.Reader
+			var scratch []byte
 			if b.gzipw != nil {
-				gr, err = gzip.NewReader(bytes.NewReader(copyBuf))
+				gr, err = gzip.NewReader(bytes.NewReader(buf))
 				if err != nil {
-					return resp, fmt.Errorf("failed to decompress request payload: %w", err)
+					return BulkIndexerResponseStat{}, fmt.Errorf("failed to decompress request body: %w", err)
 				}
 				defer gr.Close()
+				buf = nil
+				scratch = make([]byte, 4096)
 			}
 
-			lastln := 0
-			lastIdx := 0
-			// keep track of the previous newlines
-			// the buffer is being read lazily
-			seen := 0
+			// Failed documents arrive in request order, so scan the body once.
+			// Write a contiguous slice for the part of each chunk to copy.
+			line := 0
+			advance := func(to io.Writer, targetLine int) error {
+				for line < targetLine {
+					if len(buf) == 0 {
+						if gr == nil {
+							return io.ErrUnexpectedEOF
+						}
+						n, err := gr.Read(scratch)
+						if err == io.EOF && n == 0 {
+							return io.ErrUnexpectedEOF
+						}
+						if err != nil && err != io.EOF {
+							return err
+						}
+						buf = scratch[:n]
+					}
 
-			// writeItemAtPos writes the 2 lines for document at position `pos` in bulk request to io.Writer `to`
+					end := 0
+					for line < targetLine {
+						n := bytes.IndexByte(buf[end:], '\n')
+						if n == -1 {
+							end = len(buf)
+							break
+						}
+						end += n + 1
+						line++
+					}
+					if to != nil {
+						if _, err := to.Write(buf[:end]); err != nil {
+							return err
+						}
+					}
+					buf = buf[end:]
+				}
+				return nil
+			}
+
+			// Each document uses two lines: the action and the source.
 			writeItemAtPos := func(to io.Writer, pos int) error {
-				// there are two lines for each document:
-				// - action
-				// - document
-				//
-				// Find the document by looking up the newline separators.
-				// First the newline (if exists) before the 'action' then the
-				// newline at the end of the 'document' line.
-				//
-				// Delete actions have no document line, so account for them
-				// when computing line numbers.
-				deletesBefore, isDelete := deletesBeforePos(deletes, pos)
+				deletesBefore, isDelete := deletesBeforePos(sentDeletes, pos)
 				startln := pos*2 - deletesBefore
 				endln := startln + 2
 				if isDelete {
 					endln = startln + 1
 				}
-
-				if b.gzipw != nil {
-					// First loop, read from the gzip reader
-					if len(buf) == 0 {
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-					}
-
-					// newlines in the current buf
-					newlines := bytes.Count(buf, []byte{'\n'})
-
-					// loop until we've seen the start newline
-					for seen+newlines < startln {
-						seen += newlines
-						n, err := gr.Read(buf[:cap(buf)])
-						if err != nil && err != io.EOF {
-							return fmt.Errorf("failed to read from compressed buffer: %w", err)
-						}
-						buf = buf[:n]
-						newlines = bytes.Count(buf, []byte{'\n'})
-					}
-
-					startIdx := indexnth(buf, startln-seen, '\n') + 1
-					endIdx := indexnth(buf, endln-seen, '\n') + 1
-
-					// If the end newline is not in the buffer read more data
-					if endIdx == 0 {
-						// Write what we have
-						to.Write(buf[startIdx:])
-
-						// loop until we've seen the end newline
-						for seen+newlines < endln {
-							seen += newlines
-							n, err := gr.Read(buf[:cap(buf)])
-							if err != nil && err != io.EOF {
-								return fmt.Errorf("failed to read from compressed buffer: %w", err)
-							}
-							buf = buf[:n]
-							newlines = bytes.Count(buf, []byte{'\n'})
-							if seen+newlines < endln {
-								// endln is not here, write what we have and keep going
-								to.Write(buf)
-							}
-						}
-
-						// try again to find the end newline in the extra data
-						// we just read.
-						endIdx = indexnth(buf, endln-seen, '\n') + 1
-						to.Write(buf[:endIdx])
-					} else {
-						// If the end newline is in the buffer write the event
-						to.Write(buf[startIdx:endIdx])
-					}
-				} else {
-					startIdx := indexnth(copyBuf[lastIdx:], startln-lastln, '\n') + 1
-					endIdx := indexnth(copyBuf[lastIdx:], endln-lastln, '\n') + 1
-
-					to.Write(copyBuf[lastIdx:][startIdx:endIdx])
-
-					lastln = endln
-					lastIdx += endIdx
+				err := advance(nil, startln)
+				if err == nil {
+					err = advance(to, endln)
+				}
+				if err != nil {
+					return fmt.Errorf("failed to extract document at position %d: %w", pos, err)
 				}
 				return nil
 			}
 
-			// inputBuf is only used to populate failed item input
 			var inputBuf bytes.Buffer
-
 			nonRetriable := resp.FailedDocs[:0]
-			// appendNonRetriable appends an item deemed non-retriable to the nonRetriable slice.
-			// At the same time, it optionally populates item.Input with the action and document lines of the document.
-			appendNonRetriable := func(item BulkIndexerResponseItem) (err error) {
+			appendNonRetriable := func(item BulkIndexerResponseItem) error {
 				if b.config.PopulateFailedDocsInput {
 					inputBuf.Reset()
-					// In an ideal world, PopulateFailedDocsInput failures should not cause a flush failure.
-					// But since this is only for debugging / testing, and any writeItemAtPos would reveal a bug in the code,
-					// fail fast and explicitly.
-					err = writeItemAtPos(&inputBuf, item.Position)
+					if err := writeItemAtPos(&inputBuf, item.Position); err != nil {
+						return err
+					}
 					item.Input = inputBuf.String()
 				}
 				nonRetriable = append(nonRetriable, item)
-				return
+				return nil
 			}
 
 			for _, item := range resp.FailedDocs {
 				if b.config.MaxDocumentRetries > 0 && b.shouldRetryOnStatus(item.Status) {
-					// Increment retry count for the positions found.
-					count := b.retryCounts[item.Position] + 1
+					count := 1
+					if item.Position < len(sentRetryCounts) {
+						count += sentRetryCounts[item.Position]
+					}
 					// check if we are above the maxDocumentRetry setting
 					if count > b.config.MaxDocumentRetries {
 						// do not retry, return the document as failed
 						if err := appendNonRetriable(item); err != nil {
-							return resp, err
+							b.resetBuf()
+							return BulkIndexerResponseStat{}, err
 						}
 						continue
 					}
+					if err := writeItemAtPos(b.writer, item.Position); err != nil {
+						b.resetBuf()
+						return BulkIndexerResponseStat{}, err
+					}
+					if _, isDelete := deletesBeforePos(sentDeletes, item.Position); isDelete {
+						b.deletes = append(b.deletes, b.itemsAdded)
+					}
+					// Record the count only for a document that is in the buffer.
+					b.retryCounts = append(b.retryCounts, count)
+					b.itemsAdded++
+					resp.RetriedDocs++
 					if resp.GreatestRetry < count {
 						resp.GreatestRetry = count
 					}
-
-					// Since some items may have succeeded, counter positions need
-					// to be updated to match the next current buffer position.
-					b.retryCounts[b.itemsAdded] = count
-
-					if err := writeItemAtPos(b.writer, item.Position); err != nil {
-						return resp, err
-					}
-					if _, isDelete := deletesBeforePos(deletes, item.Position); isDelete {
-						b.deletes = append(b.deletes, b.itemsAdded)
-					}
-					resp.RetriedDocs++
-					b.itemsAdded++
 				} else {
 					// If it's not a retriable error, treat the document as failed
 					if err := appendNonRetriable(item); err != nil {
-						return resp, err
+						b.resetBuf()
+						return BulkIndexerResponseStat{}, err
 					}
 				}
 			}
 
-			// FailedDocs contain responses of
-			// - non-retriable errors
-			// - retriable errors that reached the retry limit
 			resp.FailedDocs = nonRetriable
 		}
 	}
@@ -762,6 +774,40 @@ func (b *BulkIndexer) Flush(ctx context.Context) (BulkIndexerResponseStat, error
 	return resp, nil
 }
 
+func flushResponseError(res *http.Response, redact bool) error {
+	e := ErrorFlushFailed{statusCode: res.StatusCode}
+	switch {
+	case res.StatusCode == 429:
+		e.tooMany = true
+	case res.StatusCode >= 500:
+		e.serverError = true
+	case res.StatusCode >= 400:
+		e.clientError = true
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return errors.Join(e, fmt.Errorf("failed to read response body: %w", err))
+	}
+	if !redact {
+		e.resp = string(body)
+		return e
+	}
+
+	var redacted struct {
+		Error struct {
+			Type     string `json:"type,omitempty"`
+			CausedBy struct {
+				Type string `json:"type,omitempty"`
+			} `json:"caused_by,omitempty"`
+		} `json:"error,omitempty"`
+	}
+	if json.Unmarshal(body, &redacted) == nil {
+		body, _ = json.Marshal(&redacted)
+		e.resp = string(body)
+	}
+	return e
+}
+
 func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
 	for _, status := range b.config.RetryOnDocumentStatus {
 		if docStatus == status {
@@ -776,22 +822,6 @@ func (b *BulkIndexer) shouldRetryOnStatus(docStatus int) bool {
 func deletesBeforePos(deletes []int, pos int) (before int, isDelete bool) {
 	before = sort.SearchInts(deletes, pos)
 	return before, before < len(deletes) && deletes[before] == pos
-}
-
-// indexnth returns the index of the nth instance of sep in s.
-// It returns -1 if sep is not present in s or nth is 0.
-func indexnth(s []byte, nth int, sep rune) int {
-	if nth == 0 {
-		return -1
-	}
-
-	count := 0
-	return bytes.IndexFunc(s, func(r rune) bool {
-		if r == sep {
-			count++
-		}
-		return nth == count
-	})
 }
 
 type ErrorFlushFailed struct {

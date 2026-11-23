@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,8 +29,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/gzip"
 
 	"github.com/stretchr/testify/assert"
@@ -765,6 +768,187 @@ func TestBulkIndexerRetryDocument_RetryOnDocumentStatus(t *testing.T) {
 	}
 }
 
+// bulkReplies returns a client that answers the nth bulk request with replies[n].
+func bulkReplies(t *testing.T, replies ...http.HandlerFunc) docappender.BulkIndexerConfig {
+	t.Helper()
+	var n atomic.Int32
+	client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		if !assert.Less(t, i, len(replies), "unexpected bulk request") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		replies[i](w, r)
+	})
+	return docappender.BulkIndexerConfig{Client: client}
+}
+
+// documentStatuses checks that the bulk request has the documents with the
+// given IDs, in order, and replies with one status per document.
+func documentStatuses(t *testing.T, ids []string, statuses ...int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		docs, result := docappendertest.DecodeBulkRequest(r)
+		var sent []string
+		for _, doc := range docs {
+			var d struct{ ID string }
+			assert.NoError(t, json.Unmarshal(doc, &d))
+			sent = append(sent, d.ID)
+		}
+		assert.Equal(t, ids, sent, "documents in the bulk request")
+		for i, status := range statuses {
+			item := result.Items[i]["create"]
+			item.Status = status
+			switch {
+			case status == http.StatusTooManyRequests:
+				item.Error.Type = "es_rejected_execution_exception"
+				result.HasErrors = true
+			case status >= http.StatusBadRequest:
+				item.Error.Type = "mapper_parsing_exception"
+				result.HasErrors = true
+			}
+			result.Items[i]["create"] = item
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(result))
+	}
+}
+
+func addDocuments(t *testing.T, indexer *docappender.BulkIndexer, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		require.NoError(t, indexer.Add(docappender.BulkIndexerItem{
+			Index: "test",
+			Body:  strings.NewReader(fmt.Sprintf(`{"id":%q}`, id)),
+		}))
+	}
+}
+
+func flushNoError(t *testing.T, indexer *docappender.BulkIndexer) docappender.BulkIndexerResponseStat {
+	t.Helper()
+	stat, err := indexer.Flush(t.Context())
+	require.NoError(t, err)
+	return stat
+}
+
+// TestBulkIndexerRetryCountMovesWithDocument checks that a retried document
+// takes its retry count to its new position, and that a new document gets
+// the full number of retries, also at a position another document used.
+func TestBulkIndexerRetryCountMovesWithDocument(t *testing.T) {
+	const ok, bad, tooMany = http.StatusCreated, http.StatusBadRequest, http.StatusTooManyRequests
+	cfg := bulkReplies(t,
+		documentStatuses(t, []string{"a", "b"}, tooMany, tooMany),             // a and b: retry 1
+		documentStatuses(t, []string{"a", "b"}, ok, tooMany),                  // b: retry 2, moves from position 1 to 0
+		documentStatuses(t, []string{"b", "c"}, tooMany, tooMany),             // b: no retries left; c: retry 1 at b's old position
+		documentStatuses(t, []string{"c", "bad", "d"}, tooMany, bad, tooMany), // c: retry 2; bad: 400 dropped; d: retry 1, moves 2 to 1
+		documentStatuses(t, []string{"c", "d"}, ok, ok),
+	)
+	cfg.MaxDocumentRetries = 2
+	indexer, err := docappender.NewBulkIndexer(cfg)
+	require.NoError(t, err)
+
+	addDocuments(t, indexer, "a", "b")
+	assert.Equal(t, 1, flushNoError(t, indexer).GreatestRetry)
+	assert.Equal(t, 2, flushNoError(t, indexer).GreatestRetry)
+
+	addDocuments(t, indexer, "c")
+	stat := flushNoError(t, indexer)
+	require.Len(t, stat.FailedDocs, 1, "only b used all its retries")
+	assert.Equal(t, 0, stat.FailedDocs[0].Position, "b")
+	assert.Equal(t, 1, stat.GreatestRetry, "c is retried for the 1st time")
+
+	addDocuments(t, indexer, "bad", "d")
+	stat = flushNoError(t, indexer)
+	require.Len(t, stat.FailedDocs, 1, "bad fails without retry")
+	assert.Equal(t, 1, stat.FailedDocs[0].Position, "bad")
+	assert.Equal(t, bad, stat.FailedDocs[0].Status)
+	assert.Equal(t, int64(2), stat.RetriedDocs, "c and d are retried")
+	assert.Equal(t, 2, stat.GreatestRetry, "c is retried for the 2nd time")
+
+	assert.Equal(t, int64(2), flushNoError(t, indexer).Indexed)
+}
+
+// TestBulkIndexerRetryCountDroppedWithDocument checks that a document's
+// retry count is dropped when the document leaves the buffer, so the next
+// document at its position gets the full number of retries.
+func TestBulkIndexerRetryCountDroppedWithDocument(t *testing.T) {
+	const tooMany = http.StatusTooManyRequests
+	testCases := map[string]struct {
+		// drop removes b, which is pending a retry, from the buffer.
+		dropReply http.HandlerFunc // reply to the bulk request in drop, if any
+		drop      func(t *testing.T, indexer *docappender.BulkIndexer)
+	}{
+		"b fails permanently": {
+			dropReply: documentStatuses(t, []string{"b"}, tooMany),
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				assert.Len(t, flushNoError(t, indexer).FailedDocs, 1)
+			},
+		},
+		"b fails permanently with 400": {
+			dropReply: documentStatuses(t, []string{"b"}, http.StatusBadRequest),
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				assert.Len(t, flushNoError(t, indexer).FailedDocs, 1)
+			},
+		},
+		"request fails with 413": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				var flushErr docappender.ErrorFlushFailed
+				require.ErrorAs(t, err, &flushErr)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, flushErr.StatusCode())
+			},
+		},
+		"transport error": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				panic(http.ErrAbortHandler) // close the connection without a response
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				assert.ErrorContains(t, err, "failed to execute the request")
+			},
+		},
+		"response cannot be decoded": {
+			dropReply: func(w http.ResponseWriter, r *http.Request) {
+				_, err := w.Write([]byte("not json"))
+				assert.NoError(t, err)
+			},
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) {
+				_, err := indexer.Flush(t.Context())
+				assert.ErrorContains(t, err, "error decoding bulk response")
+			},
+		},
+		"ResetBuf": {
+			drop: func(t *testing.T, indexer *docappender.BulkIndexer) { indexer.ResetBuf() },
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			replies := []http.HandlerFunc{documentStatuses(t, []string{"a", "b"}, http.StatusCreated, tooMany)}
+			if tc.dropReply != nil {
+				replies = append(replies, tc.dropReply)
+			}
+			replies = append(replies, documentStatuses(t, []string{"c"}, tooMany)) // c is at b's old position 0
+			cfg := bulkReplies(t, replies...)
+			cfg.MaxDocumentRetries = 1
+			indexer, err := docappender.NewBulkIndexer(cfg)
+			require.NoError(t, err)
+
+			addDocuments(t, indexer, "a", "b")
+			require.Equal(t, int64(1), flushNoError(t, indexer).RetriedDocs, "b is pending a retry")
+
+			tc.drop(t, indexer)
+			require.Zero(t, indexer.Items(), "b is dropped")
+
+			addDocuments(t, indexer, "c")
+			stat := flushNoError(t, indexer)
+			assert.Empty(t, stat.FailedDocs)
+			assert.Equal(t, int64(1), stat.RetriedDocs, "c is retried")
+			assert.Equal(t, 1, stat.GreatestRetry, "c is retried for the 1st time")
+		})
+	}
+}
+
 func TestPopulateFailedDocsInput(t *testing.T) {
 	test := func(enabled bool, compressionLevel int) {
 		client := docappendertest.NewMockElasticsearchClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -984,6 +1168,313 @@ func TestPopulateIndexStatsFailureStore(t *testing.T) {
 		"b":     {Failed: 2, FailureStoreDocs: docappender.FailureStoreDocsStat{Failed: 1, NotEnabled: 1}},
 		"c":     {Indexed: 1},
 	}, stat.IndexStats)
+}
+
+type performFunc func(*http.Request) (*http.Response, error)
+
+func (f performFunc) Perform(r *http.Request) (*http.Response, error) { return f(r) }
+
+func respondWith(status int, body io.Reader) performFunc {
+	return func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: status, Body: io.NopCloser(body)}, nil
+	}
+}
+
+func addTestDocs(t *testing.T, bi *docappender.BulkIndexer, n int) {
+	t.Helper()
+	for range n {
+		require.NoError(t, bi.Add(docappender.BulkIndexerItem{
+			Index: "idx",
+			Body:  strings.NewReader(`{"message":"test"}`),
+		}))
+	}
+}
+
+func TestBulkIndexerResponseStatJSONIterator(t *testing.T) {
+	var result struct {
+		Stat  docappender.BulkIndexerResponseStat
+		After int
+	}
+	err := jsoniter.UnmarshalFromString(
+		`{"Stat":{"items":[{"create":{"status":201}},{"create":{"error":{"type":"parse"}}}],"took":1},"After":2}`,
+		&result,
+	)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, result.Stat.Indexed)
+	require.Len(t, result.Stat.FailedDocs, 1)
+	assert.Equal(t, 1, result.Stat.FailedDocs[0].Position)
+	assert.Equal(t, "parse", result.Stat.FailedDocs[0].Error.Type)
+	assert.Equal(t, 2, result.After)
+}
+
+func TestBulkIndexerInvalidResponse(t *testing.T) {
+	const decodeErr = "error decoding bulk response"
+
+	check := func(t *testing.T, body io.Reader, filterPath, wantErr string, docs int, readErr error) {
+		t.Helper()
+		bi, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+			Client: respondWith(http.StatusOK, body), FilterPath: filterPath,
+			MaxDocumentRetries: 1, PopulateIndexStats: true,
+		})
+		require.NoError(t, err)
+		addTestDocs(t, bi, docs)
+		stat, err := bi.Flush(t.Context())
+		require.ErrorContains(t, err, wantErr)
+		if readErr != nil {
+			assert.ErrorIs(t, err, readErr)
+		}
+		assert.NotContains(t, err.Error(), "source text")
+		assert.Equal(t, docappender.BulkIndexerResponseStat{}, stat)
+		assert.Zero(t, bi.Items())
+	}
+
+	for _, tc := range []struct{ name, body string }{
+		{"before items", `{"took":[1,],"items":[{"create":{"status":201}}]}`},
+		{"truncated items", `{"items":[{"create":{"status":201}}`},
+		{"truncated object", `{"items":[{"create":{"status":201}}]`},
+		{"malformed field after items", `{"items":[{"create":{"status":201}}],"took":}`},
+		{"second JSON value", `{"items":[{"create":{"status":201}}]}{}`},
+		{"duplicate items", `{"items":[{"create":{"status":201}}],"items":[]}`},
+		{"null items", `{"items":null}`},
+		{"null action", `{"items":[{"create":null}]}`},
+		{"negative status", `{"items":[{"create":{"status":-201}}]}`},
+		{"zero status", `{"items":[{"create":{"status":0}}]}`},
+		{"1xx status", `{"items":[{"create":{"status":100}}]}`},
+		{"status out of range", `{"items":[{"create":{"status":600}}]}`},
+		{"string status", `{"items":[{"create":{"status":"201"}}]}`},
+		{"fractional status", `{"items":[{"create":{"status":201.5}}]}`},
+		{"null status", `{"items":[{"create":{"status":null}}]}`},
+		{"duplicate status", `{"items":[{"create":{"status":201,"status":200}}]}`},
+	} {
+		for _, filterPath := range []string{"", "items.*.status"} {
+			t.Run(fmt.Sprintf("%s/filter=%q", tc.name, filterPath), func(t *testing.T) {
+				check(t, strings.NewReader(tc.body), filterPath, decodeErr, 1, nil)
+			})
+		}
+	}
+
+	const extraItem = "item count 2 does not match document count 1"
+	for _, tc := range []struct{ name, body, filterPath, wantErr string }{
+		{"extra failed item", `{"items":[{"create":{"status":201}},{"create":{"status":429}}]}`, "", extraItem},
+		{"extra created item", `{"items":[{"create":{"status":201}},{"create":{"status":201}}]}`, "", extraItem},
+		{"extra item with custom filter path", `{"items":[{"create":{}},{"create":{"error":{"type":"x"}}}]}`, "items.*.error", extraItem},
+		{"no items", `{"errors":false}`, "", "item count 0 does not match document count 1"},
+		{"null body", `null`, "", "response body is not a JSON object"},
+		{"array body", `[]`, "", "response body is not a JSON object"},
+		{"item without action", `{"items":[{}]}`, "", "item 0 has no action"},
+		{"item with two actions", `{"items":[{"create":{"status":201},"index":{"status":201}}]}`, "", "item 0 has more than one action"},
+		{"item without status", `{"items":[{"create":{"_index":"idx"}}]}`, "", "item 0 has no status"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check(t, strings.NewReader(tc.body), tc.filterPath, tc.wantErr, 1, nil)
+		})
+	}
+
+	t.Run("redact and discard partial stats", func(t *testing.T) {
+		const body = `{"items":[
+			{"create":{"_index":"idx","status":201,"failure_store":"used"}},
+			{"create":{"_index":"idx","status":400,"error":{"type":"parse","reason":"source text"}}},
+			{"create":{"error":{"reason":"source text"},"status":!}}
+		]}`
+		check(t, strings.NewReader(body), "", decodeErr, 3, nil)
+	})
+
+	readErr := errors.New("response read failed")
+	for _, tc := range []struct{ name, body string }{
+		{"before object", ""},
+		{"before items", `{"took":`},
+		{"during items", `{"items":[{"create":{"status":201`},
+		{"after items", `{"items":[{"create":{"status":201}}]`},
+		{"after object", `{"items":[{"create":{"status":201}}]}`},
+	} {
+		t.Run("read error "+tc.name, func(t *testing.T) {
+			body := iotest.DataErrReader(io.MultiReader(strings.NewReader(tc.body), iotest.ErrReader(readErr)))
+			check(t, body, "", decodeErr, 1, readErr)
+		})
+	}
+	t.Run("read error on next read", func(t *testing.T) {
+		body := io.MultiReader(strings.NewReader(`{"items":[{"create":{"status":201}}]}`), iotest.ErrReader(readErr))
+		check(t, body, "", decodeErr, 1, readErr)
+	})
+}
+
+func TestBulkIndexerCustomFilterPathAllowsPartialItems(t *testing.T) {
+	var failed docappender.BulkIndexerResponseItem
+	failed.Error.Type = "mapper_parsing_exception"
+
+	for _, tc := range []struct {
+		name       string
+		filterPath string
+		body       string
+		want       docappender.BulkIndexerResponseStat
+	}{
+		{
+			name:       "only failed items",
+			filterPath: "items.*.error",
+			body:       `{"items":[{"create":{"error":{"type":"mapper_parsing_exception"}}}]}`,
+			want:       docappender.BulkIndexerResponseStat{FailedDocs: []docappender.BulkIndexerResponseItem{failed}},
+		},
+		{
+			name:       "no items",
+			filterPath: "items.*.error",
+			body:       `{}`,
+			want:       docappender.BulkIndexerResponseStat{},
+		},
+		{
+			name:       "items without status",
+			filterPath: "items.*._index",
+			body:       `{"items":[{"create":{"_index":"idx"}}]}`,
+			want:       docappender.BulkIndexerResponseStat{Indexed: 1},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bi, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client:     respondWith(http.StatusOK, strings.NewReader(tc.body)),
+				FilterPath: tc.filterPath,
+			})
+			require.NoError(t, err)
+			addTestDocs(t, bi, 2)
+
+			stat, err := bi.Flush(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, stat)
+		})
+	}
+}
+
+func TestBulkIndexerHTTPErrorBody(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		readErr error
+	}{
+		{"unreadable", http.StatusRequestEntityTooLarge, `{"error":`, io.ErrUnexpectedEOF},
+		{"informational", http.StatusEarlyHints, "", io.ErrUnexpectedEOF},
+		{"non-JSON", http.StatusBadGateway, "<html>Bad gateway</html>", nil},
+	} {
+		for name, includeSource := range map[string]docappender.Value{
+			"unset": docappender.Unset,
+			"false": docappender.False,
+			"true":  docappender.True,
+		} {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				var body io.Reader = strings.NewReader(tc.body)
+				if tc.readErr != nil {
+					body = io.MultiReader(body, iotest.ErrReader(tc.readErr))
+				}
+				bi, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+					Client: respondWith(tc.status, body), IncludeSourceOnError: includeSource,
+					PopulateIndexStats: true,
+				})
+				require.NoError(t, err)
+				addTestDocs(t, bi, 1)
+
+				stat, err := bi.Flush(t.Context())
+				var flushErr docappender.ErrorFlushFailed
+				require.ErrorAs(t, err, &flushErr)
+				if tc.readErr != nil {
+					assert.ErrorIs(t, err, tc.readErr)
+				} else {
+					assert.IsType(t, flushErr, err)
+				}
+				assert.Equal(t, tc.status, flushErr.StatusCode())
+				wantBody := tc.body
+				if tc.readErr != nil || includeSource == docappender.Unset {
+					wantBody = ""
+				}
+				assert.Equal(t, wantBody, flushErr.ResponseBody())
+				assert.Equal(t, docappender.BulkIndexerResponseStat{}, stat)
+				assert.Zero(t, bi.Items())
+			})
+		}
+	}
+}
+
+type ndjsonBuffer struct {
+	*strings.Reader
+	items int
+}
+
+func (b ndjsonBuffer) ItemCount() int { return b.items }
+
+func TestBulkIndexerExtractionError(t *testing.T) {
+	const create = `{"create":{"_index":"idx"}}` + "\n" + `{"id":1}` + "\n"
+	const deleteLine = `{"delete":{"_index":"idx","_id":"1"}}` + "\n"
+	partial := create + "{}\n{}\n{}\n" + strings.Repeat("x", 9000)
+	const retryThird = `{"items":[{"create":{"status":429}},{"create":{"status":201}},{"create":{"status":429}}]}`
+	for _, tc := range []struct {
+		name, request, response string
+		items, failedPos        int
+	}{
+		{"one-line delete before retry", deleteLine + create, `{"items":[{"delete":{"status":200}},{"create":{"status":429}}]}`, 2, 1},
+		{"missing start newline", create, retryThird, 3, 2},
+		{"missing end newline during retry", partial, retryThird, 3, 2},
+		{"missing end newline during input lookup", partial, `{"items":[{"create":{"status":429}},{"create":{"status":201}},{"create":{"status":400}}]}`, 3, 2},
+	} {
+		for _, compression := range []int{gzip.NoCompression, gzip.BestSpeed} {
+			t.Run(fmt.Sprintf("%s/compression=%d", tc.name, compression), func(t *testing.T) {
+				bi, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+					Client: respondWith(http.StatusOK, strings.NewReader(tc.response)), CompressionLevel: compression,
+					MaxDocumentRetries: 1, PopulateFailedDocsInput: true, PopulateIndexStats: true,
+				})
+				require.NoError(t, err)
+				require.NoError(t, bi.AddBuffer(ndjsonBuffer{strings.NewReader(tc.request), tc.items}))
+				stat, err := bi.Flush(t.Context())
+				require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+				assert.ErrorContains(t, err, fmt.Sprintf("position %d", tc.failedPos))
+				assert.Equal(t, docappender.BulkIndexerResponseStat{}, stat)
+				assert.Zero(t, bi.Items())
+				assert.Zero(t, bi.Len())
+				assert.Zero(t, bi.UncompressedLen())
+			})
+		}
+	}
+}
+
+func TestBulkIndexerExtractsLargeFailedDocuments(t *testing.T) {
+	const action = `{"create":{"_index":"idx"}}` + "\n"
+	var docs []string
+	for i, size := range []int{5000, 9000, 9000, 200, 9000} {
+		docs = append(docs, action+fmt.Sprintf("{\"id\":%d,\"message\":%q}\n", i, strings.Repeat("x", size)))
+	}
+	const body = `{"items":[{"create":{"status":429}},{"create":{"status":201}},{"create":{"status":400}},{"create":{"status":201}},{"create":{"status":429}}]}`
+	for _, compression := range []int{gzip.NoCompression, gzip.BestSpeed} {
+		t.Run(fmt.Sprintf("compression=%d", compression), func(t *testing.T) {
+			bi, err := docappender.NewBulkIndexer(docappender.BulkIndexerConfig{
+				Client: respondWith(http.StatusOK, strings.NewReader(body)), CompressionLevel: compression,
+				MaxDocumentRetries: 1, PopulateFailedDocsInput: true,
+			})
+			require.NoError(t, err)
+			require.NoError(t, bi.AddBuffer(ndjsonBuffer{strings.NewReader(strings.Join(docs, "")), len(docs)}))
+			stat, err := bi.Flush(t.Context())
+			require.NoError(t, err)
+			assert.EqualValues(t, 2, stat.Indexed)
+			assert.EqualValues(t, 2, stat.RetriedDocs)
+			require.Len(t, stat.FailedDocs, 1)
+			assert.Equal(t, 2, stat.FailedDocs[0].Position)
+			assert.Equal(t, docs[2], stat.FailedDocs[0].Input)
+			require.Equal(t, 2, bi.Items())
+
+			bi.SetClient(performFunc(func(req *http.Request) (*http.Response, error) {
+				var body io.Reader = req.Body
+				if compression != gzip.NoCompression {
+					r, err := gzip.NewReader(body)
+					require.NoError(t, err)
+					defer r.Close()
+					body = r
+				}
+				payload, err := io.ReadAll(body)
+				require.NoError(t, err)
+				assert.Equal(t, docs[0]+docs[4], string(payload))
+				const accepted = `{"items":[{"create":{"status":201}},{"create":{"status":201}}]}`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(accepted))}, nil
+			}))
+			stat, err = bi.Flush(t.Context())
+			require.NoError(t, err)
+			assert.EqualValues(t, 2, stat.Indexed)
+		})
+	}
 }
 
 func TestBulkIndexerDelete(t *testing.T) {
